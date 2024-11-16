@@ -42,6 +42,10 @@ let () =
     close_in c;
     if !parse_only then exit 0;
     let f = Typing.file ~debug f in
+    if debug then begin
+      let fmt = Format.std_formatter in
+      Format.fprintf fmt "Typed AST:\n%a@." PrintTypedAst.print_tfile f
+    end;
     if !type_only then exit 0;
     let code = Compile.file ~debug f in
     let c = open_out (Filename.chop_suffix file ".py" ^ ".s") in

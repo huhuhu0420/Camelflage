@@ -38,4 +38,5 @@ _opam/
 *.exe
 
 # output
+*.out
 out
