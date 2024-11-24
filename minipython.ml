@@ -46,6 +46,8 @@ let () =
       let fmt = Format.std_formatter in
       Format.fprintf fmt "Typed AST:\n%a@." PrintTypedAst.print_tfile f
     end;
+    Codegen.codegen_file f;
+    Codegen.write_ir_to_file (Filename.chop_suffix file ".py" ^ ".ll");
     if !type_only then exit 0;
     let code = Compile.file ~debug f in
     let c = open_out (Filename.chop_suffix file ".py" ^ ".s") in
