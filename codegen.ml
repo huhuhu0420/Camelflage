@@ -127,24 +127,33 @@ let rec codegen_stmt = function
       in
       ignore (build_store val_e var_ptr builder)
   | TSprint e ->
-      let printf_func =
-        match lookup_function "printf" the_module with
-        | Some f -> f
-        | None ->
-            let printf_t = var_arg_function_type i32_t [| str_t |] in
-            declare_function "printf" printf_t the_module
-      in
-      let arg = codegen_expr e in
-      let arg_type = type_of arg in
-      let fmt_str =
-        if arg_type = i64_t then
-          build_global_stringptr "%ld\n" "fmt" builder
-        else if arg_type = str_t then
-          build_global_stringptr "%s\n" "fmt" builder
-        else
-          failwith "Unsupported type in print"
-      in
+    (* Get or declare printf function *)
+    let printf_func =
+      match lookup_function "printf" the_module with
+      | Some f -> f
+      | None ->
+          let printf_t = var_arg_function_type i32_t [| str_t |] in
+          declare_function "printf" printf_t the_module
+    in
+    
+    (* Generate the value to print *)
+    let arg = codegen_expr e in
+    let arg_type = type_of arg in
+    
+    (* Convert integers to string format *)
+    if arg_type = i64_t then
+      let fmt_str = build_global_stringptr "%lld\n" "fmt" builder in
+      Printf.printf "Printing integer\n";
       ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg |] "" builder)
+    else if arg_type = i1_t then
+      let fmt_str = build_global_stringptr "%d\n" "fmt" builder in
+      let arg_i32 = build_zext arg i32_t "booltmp" builder in
+      ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg_i32 |] "" builder)
+    else if arg_type = str_t then
+      let fmt_str = build_global_stringptr "%s\n" "fmt" builder in
+      ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg |] "" builder)
+    else
+      failwith "Unsupported type in print"
   | TSblock stmts ->
       List.iter codegen_stmt stmts
   | TSfor _ ->
@@ -156,6 +165,7 @@ let rec codegen_stmt = function
 
 (* Code generation for function definitions *)
 let codegen_def (fn, body) =
+  Printf.printf "Generating code for function %s\n" fn.fn_name;
   let func_name = fn.fn_name in
   let param_names = List.map (fun v -> v.v_name) fn.fn_params in
   let param_types = Array.make (List.length param_names) i64_t in
@@ -190,6 +200,7 @@ let codegen_def (fn, body) =
   ) (params the_function);
 
   try
+    Printf.printf "Generating code for the body of function %s\n" fn.fn_name;
     codegen_stmt body;
     if block_terminator (insertion_block builder) = None then
       if func_name = "main" then
@@ -199,11 +210,13 @@ let codegen_def (fn, body) =
     Llvm_analysis.assert_valid_function the_function;
     the_function
   with e ->
+    Printf.printf "Error generating code for function %s\n" fn.fn_name;
     delete_function the_function;
     raise e
 
 (* Code generation for the entire file *)
 let codegen_file tdefs =
+  Printf.printf "Generating code for the entire file\n";
   List.iter (fun def -> ignore (codegen_def def)) tdefs
 
 (* Optionally, write the module to a file *)

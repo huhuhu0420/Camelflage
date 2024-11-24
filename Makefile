@@ -6,6 +6,10 @@ all: minipython.exe
 debug: minipython.exe
 	./minipython.exe --debug test.py
 
+llvm: minipython.exe
+	llc-16 test.ll -o test.s
+	gcc -no-pie -g test.s && ./a.out
+
 minipython.exe:
 	dune build minipython.exe
 
