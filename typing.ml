@@ -5,16 +5,56 @@ let debug = ref false
 let dummy_loc = Lexing.dummy_pos, Lexing.dummy_pos
 
 exception Error of Ast.location * string
+exception TypeError of Ast.location * string
 
-(* Use the following function to signal typing errors, e.g.
-     error ~loc "unbound variable %s" id
-*)
+(* Type definition for Mini-Python *)
+type ty =
+  | TNone
+  | TInt
+  | TBool
+  | TString
+  | TList of ty
+  | TAny  (* For handling Python's dynamic typing aspects *)
+
+(* Error reporting *)
+let type_error ?(loc=dummy_loc) f =
+  Format.kasprintf (fun s -> raise (TypeError (loc, s))) ("@[" ^^ f ^^ "@]")
+
 let error ?(loc=dummy_loc) f =
   Format.kasprintf (fun s -> raise (Error (loc, s))) ("@[" ^^ f ^^ "@]")
 
-(* Type environments *)
-type env = (string, var) Hashtbl.t
-type fenv = (string, fn) Hashtbl.t
+(* Type comparison with support for Any type *)
+let rec type_eq t1 t2 =
+  match t1, t2 with
+  | TAny, _ | _, TAny -> true  (* Any type can match with any other type *)
+  | TNone, TNone | TInt, TInt | TBool, TBool | TString, TString -> true
+  | TList t1', TList t2' -> type_eq t1' t2'
+  | _ -> false
+
+(* Get type of constant *)
+let type_of_const = function
+  | Cnone -> TNone
+  | Cbool _ -> TBool
+  | Cint _ -> TInt
+  | Cstring _ -> TString
+
+(* Get type of binary operation result *)
+let type_of_binop op t1 t2 =
+  match op, t1, t2 with
+  | (Badd | Bsub | Bmul | Bdiv | Bmod), TInt, TInt -> TInt
+  | (Blt | Ble | Bgt | Bge | Beq | Bneq), TInt, TInt -> TBool
+  | (Band | Bor), TBool, TBool -> TBool
+  | Badd, TString, TString -> TString  (* String concatenation *)
+  | Beq, _, _ | Bneq, _, _ -> TBool    (* Python allows comparing any types *)
+  | _ -> type_error "Invalid types for binary operation"
+
+(* Get type of unary operation result *)
+let type_of_unop op t =
+  match op, t with
+  | Uneg, TInt -> TInt
+  | Unot, TBool -> TBool
+  | Unot, _ -> TBool  (* Python allows 'not' on any type *)
+  | _ -> type_error "Invalid type for unary operation"
 
 (* The main function to type-check the entire file *)
 let rec file ?debug:(b=false) (p: Ast.file) : Ast.tfile =
@@ -22,9 +62,9 @@ let rec file ?debug:(b=false) (p: Ast.file) : Ast.tfile =
   let (defs, global_stmt) = p in
 
   (* Create a function environment to store function definitions *)
-  let functions : fenv = Hashtbl.create 17 in
+  let functions : (string, fn) Hashtbl.t = Hashtbl.create 17 in
 
-  (* First, collect all function names and create initial fn records *)
+  (* First pass: collect function definitions *)
   List.iter (fun (id, params, _) ->
     let var_params = List.map (fun param_id ->
       { v_name = param_id.id; v_ofs = 0 }
@@ -40,11 +80,11 @@ let rec file ?debug:(b=false) (p: Ast.file) : Ast.tfile =
   let process_def ((id, params, body) : Ast.def) : Ast.tdef =
     let fn = Hashtbl.find functions id.id in
     (* Build initial environment with function parameters *)
-    let env : env = Hashtbl.create 17 in
+    let env : (string, var) Hashtbl.t = Hashtbl.create 17 in
     List.iter (fun var ->
       Hashtbl.add env var.v_name var
     ) fn.fn_params;
-    (* Type-check the function body *)
+    
     let tstmt = typing_stmt env functions body in
     (fn, tstmt)
   in
@@ -52,20 +92,19 @@ let rec file ?debug:(b=false) (p: Ast.file) : Ast.tfile =
   (* Type-check each function definition *)
   let tdefs = List.map process_def defs in
 
-  (* Now process global statements as the 'main' function *)
+  (* Process global statements as the 'main' function *)
   let main_fn = {
     fn_name = "main";
     fn_params = [];
   } in
-  let env : env = Hashtbl.create 17 in
+  let env : (string, var) Hashtbl.t = Hashtbl.create 17 in
   let main_tstmt = typing_stmt env functions global_stmt in
   let main_tdef = (main_fn, main_tstmt) in
 
-  (* Return the list of typed function definitions *)
   tdefs @ [main_tdef]
 
-(* Recursive function to type-check statements *)
-and typing_stmt (env : env) (functions : fenv) (stmt : Ast.stmt) : Ast.tstmt =
+(* Type-check statements *)
+and typing_stmt (env : (string, var) Hashtbl.t) (functions : (string, fn) Hashtbl.t) (stmt : Ast.stmt) : Ast.tstmt =
   match stmt with
   | Sif (cond, then_stmt, else_stmt) ->
       let tcond = typing_expr env functions cond in
@@ -79,7 +118,6 @@ and typing_stmt (env : env) (functions : fenv) (stmt : Ast.stmt) : Ast.tstmt =
 
   | Sassign (id, expr) ->
       let texpr = typing_expr env functions expr in
-      (* Check if variable is in the environment *)
       let var =
         try Hashtbl.find env id.id
         with Not_found ->
@@ -95,14 +133,12 @@ and typing_stmt (env : env) (functions : fenv) (stmt : Ast.stmt) : Ast.tstmt =
       TSprint texpr
 
   | Sblock stmts ->
-      (* Create a new scope by copying the current environment *)
       let new_env = Hashtbl.copy env in
       let tstmts = List.map (fun s -> typing_stmt new_env functions s) stmts in
       TSblock tstmts
 
   | Sfor (id, expr, body) ->
       let texpr = typing_expr env functions expr in
-      (* Add iterator variable to the environment *)
       let var = { v_name = id.id; v_ofs = 0 } in
       Hashtbl.add env id.id var;
       let tbody = typing_stmt env functions body in
@@ -118,14 +154,13 @@ and typing_stmt (env : env) (functions : fenv) (stmt : Ast.stmt) : Ast.tstmt =
       let te3 = typing_expr env functions e3 in
       TSset (te1, te2, te3)
 
-(* Recursive function to type-check expressions *)
-and typing_expr (env : env) (functions : fenv) (expr : Ast.expr) : Ast.texpr =
+(* Type-check expressions *)
+and typing_expr (env : (string, var) Hashtbl.t) (functions : (string, fn) Hashtbl.t) (expr : Ast.expr) : Ast.texpr =
   match expr with
   | Ecst cst ->
       TEcst cst
 
   | Eident id ->
-      (* Look up variable in the environment *)
       (try
          let var = Hashtbl.find env id.id in
          TEvar var
@@ -150,10 +185,11 @@ and typing_expr (env : env) (functions : fenv) (expr : Ast.expr) : Ast.texpr =
         | _ ->
             error ~loc:id.loc "Invalid arguments to range"
       else
-        (* Look up function in the function environment *)
         (try
            let fn = Hashtbl.find functions id.id in
            let targs = List.map (typing_expr env functions) args in
+           if List.length targs <> List.length fn.fn_params then
+             error ~loc:id.loc "Wrong number of arguments for function %s" id.id;
            TEcall (fn, targs)
          with Not_found ->
            error ~loc:id.loc "Unbound function %s" id.id)
@@ -166,4 +202,3 @@ and typing_expr (env : env) (functions : fenv) (expr : Ast.expr) : Ast.texpr =
       let te1 = typing_expr env functions e1 in
       let te2 = typing_expr env functions e2 in
       TEget (te1, te2)
-
