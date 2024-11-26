@@ -9,11 +9,14 @@ let debug = ref false
 let parse_only = ref false
 let type_only = ref false
 
+let ir_only = ref false
+
 let spec =
   [
     "--debug", Arg.Set debug, "  debug mode";
     "--parse-only", Arg.Set parse_only, "  stop after parsing";
     "--type-only", Arg.Set type_only, "  stop after static typing";
+    "--ir-only", Arg.Set ir_only, "  stop after generating IR";
   ]
 
 let file =
@@ -46,9 +49,10 @@ let () =
       let fmt = Format.std_formatter in
       Format.fprintf fmt "Typed AST:\n%a@." PrintTypedAst.print_tfile f
     end;
+    if !type_only then exit 0;
     Codegen.codegen_file f;
     Codegen.write_ir_to_file (Filename.chop_suffix file ".py" ^ ".ll");
-    if !type_only then exit 0;
+    if !ir_only then exit 0;
     let code = Compile.file ~debug f in
     let c = open_out (Filename.chop_suffix file ".py" ^ ".s") in
     let fmt = formatter_of_out_channel c in
