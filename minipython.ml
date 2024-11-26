@@ -43,6 +43,9 @@ let () =
   try
     let f = Parser.file Lexer.next_token lb in
     close_in c;
+    if debug then begin
+      print_endline(PrintAst.print_file f)
+    end;
     if !parse_only then exit 0;
     let f = Typing.file ~debug f in
     if debug then begin
