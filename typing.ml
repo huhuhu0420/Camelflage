@@ -95,15 +95,26 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       | _ -> error "len() requires exactly one argument"
       in
       TInt
-
-  | Ecall ({id = "list"; _}, [arg]) ->
+  
+  | Ecall ({id = "list"; _}, [Ecall ({id = "range"; _}, [arg])]) ->
       let arg_type = infer_expr_type env arg in
       begin match arg_type with
       | TInt -> TList TInt
+      | TAny -> TList TInt
       | _ -> error "list(range()) requires an integer argument"
       end
+
+  | Ecall ({id = "list"; _}, args) ->
+      if List.length args = 0 then 
+        error "list() requires at least one argument"
+      else 
+        let first_type = infer_expr_type env (List.hd args) in
+        if List.for_all (fun e -> type_eq first_type (infer_expr_type env e)) args 
+        then TList first_type
+        else error "list() elements must have the same type"
   
   | Ecall ({id = id_str; _}, args) -> 
+    Printf.printf "Ecall: %s\n" id_str;
     TAny  (* Dynamic function calls *)
 
   | Elist exprs ->
@@ -178,6 +189,7 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
 
   | Sprint expr ->
       let texpr = type_expr expr in
+      let _ = infer_expr_type env expr in
       TSprint texpr
 
   | Sblock stmts ->
@@ -224,6 +236,15 @@ let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
   (* Type check function definitions *)
   let type_check_def (id, params, body) : tdef =
     let fn_env = Hashtbl.create 17 in
+
+    (* check if params are duplicated*)
+    let _ = List.fold_left (fun acc p -> 
+      if Hashtbl.mem acc p.id then
+        error ~loc:p.loc "Duplicate parameter %s" p.id
+      else
+        Hashtbl.add acc p.id TAny;
+      acc
+    ) fn_env params in
     
     (* Add function parameters to environment *)
     List.iter (fun param -> 
