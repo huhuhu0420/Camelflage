@@ -19,6 +19,14 @@ type ty =
 let error ?(loc=dummy_loc) f =
   Format.kasprintf (fun s -> raise (Error (loc, s))) ("@[" ^^ f ^^ "@]")
 
+let rec string_of_ty = function
+  | TNone -> "None"
+  | TInt -> "int"
+  | TBool -> "bool"
+  | TString -> "string"
+  | TList t -> "list<" ^ string_of_ty t ^ ">"
+  | TAny -> "any"
+
 (* Type comparison with support for Any type *)
 let rec type_eq t1 t2 =
   match t1, t2 with
@@ -35,13 +43,19 @@ let type_of_const = function
   | Cstring _ -> TString
 
 (* Infer type for expressions *)
-let rec infer_expr_type (expr : expr) : ty =
+let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
   match expr with
   | Ecst c -> type_of_const c
-  | Eident _ -> TAny  (* Dynamic typing *)
+  | Eident _ ->
+      let id = match expr with Eident id -> id | _ -> assert false in
+      begin try
+        Hashtbl.find env id.id
+      with Not_found ->
+        error ~loc:id.loc "Variable %s not found" id.id
+      end
   | Ebinop (op, e1, e2) ->
-      let t1 = infer_expr_type e1 in
-      let t2 = infer_expr_type e2 in
+      let t1 = infer_expr_type env e1 in
+      let t2 = infer_expr_type env e2 in
       begin match op with
       (* Arithmetic operations: only on ints *)
       | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt && t2 = TInt -> TInt
@@ -60,7 +74,7 @@ let rec infer_expr_type (expr : expr) : ty =
       end
 
   | Eunop (op, e) ->
-      let t = infer_expr_type e in
+      let t = infer_expr_type env e in
       begin match op with
       | Uneg when t = TInt -> TInt      (* Negation of int *)
       | Unot -> TBool                   (* 'not' works on any type *)
@@ -68,7 +82,7 @@ let rec infer_expr_type (expr : expr) : ty =
       end
 
   | Ecall ({id = "len"; _}, [arg]) ->
-      let arg_type = infer_expr_type arg in
+      let arg_type = infer_expr_type env arg in
       begin match arg_type with
       | TString | TList _ -> TInt
       | _ -> error "len() only works on strings or lists"
@@ -83,7 +97,7 @@ let rec infer_expr_type (expr : expr) : ty =
       TInt
 
   | Ecall ({id = "list"; _}, [arg]) ->
-      let arg_type = infer_expr_type arg in
+      let arg_type = infer_expr_type env arg in
       begin match arg_type with
       | TInt -> TList TInt
       | _ -> error "list(range()) requires an integer argument"
@@ -93,18 +107,17 @@ let rec infer_expr_type (expr : expr) : ty =
     TAny  (* Dynamic function calls *)
 
   | Elist exprs ->
-      (* All elements in the list should have the same type *)
       if List.length exprs = 0 then TList TAny
       else 
-        let first_type = infer_expr_type (List.hd exprs) in
-        if List.for_all (fun e -> type_eq first_type (infer_expr_type e)) exprs 
+        let first_type = infer_expr_type env (List.hd exprs) in
+        if List.for_all (fun e -> type_eq first_type (infer_expr_type env e)) exprs 
         then TList first_type
         else error "List elements must have the same type"
 
   | Eget (e1, e2) ->
       (* Indexing into a list or string *)
-      let list_type = infer_expr_type e1 in
-      let index_type = infer_expr_type e2 in
+      let list_type = infer_expr_type env e1 in
+      let index_type = infer_expr_type env e2 in
       begin match list_type, index_type with
       | TList t, TInt -> t
       | TString, TInt -> TString
@@ -159,7 +172,7 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
   | Sassign (id, expr) ->
       let texpr = type_expr expr in
       let var = { v_name = id.id; v_ofs = 0 } in
-      let expr_type = infer_expr_type expr in
+      let expr_type = infer_expr_type env expr in
       Hashtbl.replace env id.id expr_type;
       TSassign (var, texpr)
 
@@ -175,27 +188,29 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
   | Sfor (id, expr, body) ->
       let texpr = type_expr expr in
       let var = { v_name = id.id; v_ofs = 0 } in
-      let list_type = infer_expr_type expr in
+      let list_type = infer_expr_type env expr in
+      Printf.printf "list_type: %s\n" (string_of_ty list_type);
       begin match list_type with
       | TList elem_type ->
           Hashtbl.add env id.id elem_type;
           let tbody = type_check_stmt env body in
           TSfor (var, texpr, tbody)
-      | _ -> error ~loc:id.loc "For loop requires a list"
+      | _ -> 
+        error ~loc:id.loc "For loop requires a list"
       end
 
   | Seval expr ->
       let texpr = type_expr expr in
-      let _ = infer_expr_type expr in
+      let _ = infer_expr_type env expr in
       TSeval texpr
 
   | Sset (list_expr, index_expr, value_expr) ->
       let tlist = type_expr list_expr in
       let tindex = type_expr index_expr in
       let tvalue = type_expr value_expr in
-      let list_type = infer_expr_type list_expr in
-      let index_type = infer_expr_type index_expr in
-      let value_type = infer_expr_type value_expr in
+      let list_type = infer_expr_type env list_expr in
+      let index_type = infer_expr_type env index_expr in
+      let value_type = infer_expr_type env value_expr in
       begin match list_type, index_type with
       | TList elem_type, TInt when type_eq elem_type value_type -> 
           TSset (tlist, tindex, tvalue)
