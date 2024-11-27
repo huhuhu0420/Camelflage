@@ -118,12 +118,7 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
     TAny  (* Dynamic function calls *)
 
   | Elist exprs ->
-      if List.length exprs = 0 then TList TAny
-      else 
-        let first_type = infer_expr_type env (List.hd exprs) in
-        if List.for_all (fun e -> type_eq first_type (infer_expr_type env e)) exprs 
-        then TList first_type
-        else error "List elements must have the same type"
+    TList TAny
 
   | Eget (e1, e2) ->
       (* Indexing into a list or string *)
