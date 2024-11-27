@@ -4,8 +4,7 @@ let debug = ref false
 
 let dummy_loc = Lexing.dummy_pos, Lexing.dummy_pos
 
-exception Error of Ast.location * string
-exception TypeError of Ast.location * string
+exception Error of location * string
 
 (* Type definition for Mini-Python *)
 type ty =
@@ -14,19 +13,16 @@ type ty =
   | TBool
   | TString
   | TList of ty
-  | TAny  (* For handling Python's dynamic typing aspects *)
+  | TAny  (* For handling dynamic typing aspects *)
 
 (* Error reporting *)
-let type_error ?(loc=dummy_loc) f =
-  Format.kasprintf (fun s -> raise (TypeError (loc, s))) ("@[" ^^ f ^^ "@]")
-
 let error ?(loc=dummy_loc) f =
   Format.kasprintf (fun s -> raise (Error (loc, s))) ("@[" ^^ f ^^ "@]")
 
 (* Type comparison with support for Any type *)
 let rec type_eq t1 t2 =
   match t1, t2 with
-  | TAny, _ | _, TAny -> true  (* Any type can match with any other type *)
+  | TAny, _ | _, TAny -> true
   | TNone, TNone | TInt, TInt | TBool, TBool | TString, TString -> true
   | TList t1', TList t2' -> type_eq t1' t2'
   | _ -> false
@@ -38,167 +34,204 @@ let type_of_const = function
   | Cint _ -> TInt
   | Cstring _ -> TString
 
-(* Get type of binary operation result *)
-let type_of_binop op t1 t2 =
-  match op, t1, t2 with
-  | (Badd | Bsub | Bmul | Bdiv | Bmod), TInt, TInt -> TInt
-  | (Blt | Ble | Bgt | Bge | Beq | Bneq), TInt, TInt -> TBool
-  | (Band | Bor), TBool, TBool -> TBool
-  | Badd, TString, TString -> TString  (* String concatenation *)
-  | Beq, _, _ | Bneq, _, _ -> TBool    (* Python allows comparing any types *)
-  | _ -> type_error "Invalid types for binary operation"
+(* Infer type for expressions *)
+let rec infer_expr_type (expr : expr) : ty =
+  match expr with
+  | Ecst c -> type_of_const c
+  | Eident _ -> TAny  (* Dynamic typing *)
+  | Ebinop (op, e1, e2) ->
+      let t1 = infer_expr_type e1 in
+      let t2 = infer_expr_type e2 in
+      begin match op with
+      (* Arithmetic operations: only on ints *)
+      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt && t2 = TInt -> TInt
+      
+      (* Comparisons *)
+      | Blt | Ble | Bgt | Bge | Beq | Bneq -> TBool
+      
+      (* Logical operations *)
+      | Band | Bor when t1 = TBool && t2 = TBool -> TBool
+      
+      (* String and list concatenation *)
+      | Badd when t1 = TString && t2 = TString -> TString
+      | Badd when t1 = TList TAny && t2 = TList TAny -> t1
+      
+      | _ -> error "Invalid binary operation"
+      end
 
-(* Get type of unary operation result *)
-let type_of_unop op t =
-  match op, t with
-  | Uneg, TInt -> TInt
-  | Unot, TBool -> TBool
-  | Unot, _ -> TBool  (* Python allows 'not' on any type *)
-  | _ -> type_error "Invalid type for unary operation"
+  | Eunop (op, e) ->
+      let t = infer_expr_type e in
+      begin match op with
+      | Uneg when t = TInt -> TInt      (* Negation of int *)
+      | Unot -> TBool                   (* 'not' works on any type *)
+      | _ -> error "Invalid unary operation"
+      end
 
-(* The main function to type-check the entire file *)
-let rec file ?debug:(b=false) (p: Ast.file) : Ast.tfile =
-  debug := b;
-  let (defs, global_stmt) = p in
+  | Ecall ({id = "len"; _}, [arg]) ->
+      let arg_type = infer_expr_type arg in
+      begin match arg_type with
+      | TString | TList _ -> TInt
+      | _ -> error "len() only works on strings or lists"
+      end
 
-  (* Create a function environment to store function definitions *)
-  let functions : (string, fn) Hashtbl.t = Hashtbl.create 17 in
+  | Ecall ({id = "len"; _}, args) ->
+      (* error when no argument and multiple argument*)
+      let _ = match args with
+      | [arg] -> arg
+      | _ -> error "len() requires exactly one argument"
+      in
+      TInt
 
-  (* First pass: collect function definitions *)
-  List.iter (fun (id, params, _) ->
-    let var_params = List.map (fun param_id ->
-      { v_name = param_id.id; v_ofs = 0 }
-    ) params in
-    let fn = {
-      fn_name = id.id;
-      fn_params = var_params;
-    } in
-    Hashtbl.add functions id.id fn
-  ) defs;
+  | Ecall ({id = "list"; _}, [arg]) ->
+      let arg_type = infer_expr_type arg in
+      begin match arg_type with
+      | TInt -> TList TInt
+      | _ -> error "list(range()) requires an integer argument"
+      end
+  
+  | Ecall ({id = id_str; _}, args) -> 
+    TAny  (* Dynamic function calls *)
 
-  (* Function to type-check a function definition *)
-  let process_def ((id, params, body) : Ast.def) : Ast.tdef =
-    let fn = Hashtbl.find functions id.id in
-    (* Build initial environment with function parameters *)
-    let env : (string, var) Hashtbl.t = Hashtbl.create 17 in
-    List.iter (fun var ->
-      Hashtbl.add env var.v_name var
-    ) fn.fn_params;
-    
-    let tstmt = typing_stmt env functions body in
-    (fn, tstmt)
-  in
+  | Elist exprs ->
+      (* All elements in the list should have the same type *)
+      if List.length exprs = 0 then TList TAny
+      else 
+        let first_type = infer_expr_type (List.hd exprs) in
+        if List.for_all (fun e -> type_eq first_type (infer_expr_type e)) exprs 
+        then TList first_type
+        else error "List elements must have the same type"
 
-  (* Type-check each function definition *)
-  let tdefs = List.map process_def defs in
+  | Eget (e1, e2) ->
+      (* Indexing into a list or string *)
+      let list_type = infer_expr_type e1 in
+      let index_type = infer_expr_type e2 in
+      begin match list_type, index_type with
+      | TList t, TInt -> t
+      | TString, TInt -> TString
+      | _ -> error "Invalid indexing operation"
+      end
 
-  (* Process global statements as the 'main' function *)
-  let main_fn = {
-    fn_name = "main";
-    fn_params = [];
-  } in
-  let env : (string, var) Hashtbl.t = Hashtbl.create 17 in
-  let main_tstmt = typing_stmt env functions global_stmt in
-  let main_tdef = (main_fn, main_tstmt) in
+(* Convert expression to typed expression *)
+let rec type_expr (expr : expr) : texpr =
+  match expr with
+  | Ecst c -> TEcst c
+  | Eident id -> 
+      let var = { v_name = id.id; v_ofs = 0 } in
+      TEvar var
+  | Ebinop (op, e1, e2) ->
+      let te1 = type_expr e1 in
+      let te2 = type_expr e2 in
+      TEbinop (op, te1, te2)
+  | Eunop (op, e) ->
+      let te = type_expr e in
+      TEunop (op, te)
+  | Ecall ({id = "range"; _} as id, [arg]) ->
+      let targ = type_expr arg in
+      TErange targ
+  | Ecall (id, args) ->
+      let targs = List.map type_expr args in
+      let fn = { 
+        fn_name = id.id; 
+        fn_params = List.map (fun _ -> { v_name = "_"; v_ofs = 0 }) args 
+      } in
+      TEcall (fn, targs)
+  | Elist exprs ->
+      let texprs = List.map type_expr exprs in
+      TElist texprs
+  | Eget (e1, e2) ->
+      let te1 = type_expr e1 in
+      let te2 = type_expr e2 in
+      TEget (te1, te2)
 
-  tdefs @ [main_tdef]
-
-(* Type-check statements *)
-and typing_stmt (env : (string, var) Hashtbl.t) (functions : (string, fn) Hashtbl.t) (stmt : Ast.stmt) : Ast.tstmt =
+(* Type check statements *)
+let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
   match stmt with
   | Sif (cond, then_stmt, else_stmt) ->
-      let tcond = typing_expr env functions cond in
-      let tthen = typing_stmt env functions then_stmt in
-      let telse = typing_stmt env functions else_stmt in
+      let tcond = type_expr cond in
+      let tthen = type_check_stmt env then_stmt in
+      let telse = type_check_stmt env else_stmt in
       TSif (tcond, tthen, telse)
 
   | Sreturn expr ->
-      let texpr = typing_expr env functions expr in
+      let texpr = type_expr expr in
       TSreturn texpr
 
   | Sassign (id, expr) ->
-      let texpr = typing_expr env functions expr in
-      let var =
-        try Hashtbl.find env id.id
-        with Not_found ->
-          (* Variable not found; declare it *)
-          let var = { v_name = id.id; v_ofs = 0 } in
-          Hashtbl.add env id.id var;
-          var
-      in
+      let texpr = type_expr expr in
+      let var = { v_name = id.id; v_ofs = 0 } in
+      let expr_type = infer_expr_type expr in
+      Hashtbl.replace env id.id expr_type;
       TSassign (var, texpr)
 
   | Sprint expr ->
-      let texpr = typing_expr env functions expr in
+      let texpr = type_expr expr in
       TSprint texpr
 
   | Sblock stmts ->
       let new_env = Hashtbl.copy env in
-      let tstmts = List.map (fun s -> typing_stmt new_env functions s) stmts in
+      let tstmts = List.map (type_check_stmt new_env) stmts in
       TSblock tstmts
 
   | Sfor (id, expr, body) ->
-      let texpr = typing_expr env functions expr in
+      let texpr = type_expr expr in
       let var = { v_name = id.id; v_ofs = 0 } in
-      Hashtbl.add env id.id var;
-      let tbody = typing_stmt env functions body in
-      TSfor (var, texpr, tbody)
+      let list_type = infer_expr_type expr in
+      begin match list_type with
+      | TList elem_type ->
+          Hashtbl.add env id.id elem_type;
+          let tbody = type_check_stmt env body in
+          TSfor (var, texpr, tbody)
+      | _ -> error ~loc:id.loc "For loop requires a list"
+      end
 
   | Seval expr ->
-      let texpr = typing_expr env functions expr in
+      let texpr = type_expr expr in
+      let _ = infer_expr_type expr in
       TSeval texpr
 
-  | Sset (e1, e2, e3) ->
-      let te1 = typing_expr env functions e1 in
-      let te2 = typing_expr env functions e2 in
-      let te3 = typing_expr env functions e3 in
-      TSset (te1, te2, te3)
+  | Sset (list_expr, index_expr, value_expr) ->
+      let tlist = type_expr list_expr in
+      let tindex = type_expr index_expr in
+      let tvalue = type_expr value_expr in
+      let list_type = infer_expr_type list_expr in
+      let index_type = infer_expr_type index_expr in
+      let value_type = infer_expr_type value_expr in
+      begin match list_type, index_type with
+      | TList elem_type, TInt when type_eq elem_type value_type -> 
+          TSset (tlist, tindex, tvalue)
+      | _ -> error "Invalid list assignment"
+      end
 
-(* Type-check expressions *)
-and typing_expr (env : (string, var) Hashtbl.t) (functions : (string, fn) Hashtbl.t) (expr : Ast.expr) : Ast.texpr =
-  match expr with
-  | Ecst cst ->
-      TEcst cst
-
-  | Eident id ->
-      (try
-         let var = Hashtbl.find env id.id in
-         TEvar var
-       with Not_found ->
-         error ~loc:id.loc "Unbound variable %s" id.id)
-
-  | Ebinop (op, e1, e2) ->
-      let te1 = typing_expr env functions e1 in
-      let te2 = typing_expr env functions e2 in
-      TEbinop (op, te1, te2)
-
-  | Eunop (op, e) ->
-      let te = typing_expr env functions e in
-      TEunop (op, te)
-
-  | Ecall (id, args) ->
-      if id.id = "range" then
-        match args with
-        | [arg] ->
-            let targ = typing_expr env functions arg in
-            TErange targ
-        | _ ->
-            error ~loc:id.loc "Invalid arguments to range"
-      else
-        (try
-           let fn = Hashtbl.find functions id.id in
-           let targs = List.map (typing_expr env functions) args in
-           if List.length targs <> List.length fn.fn_params then
-             error ~loc:id.loc "Wrong number of arguments for function %s" id.id;
-           TEcall (fn, targs)
-         with Not_found ->
-           error ~loc:id.loc "Unbound function %s" id.id)
-
-  | Elist exprs ->
-      let texprs = List.map (typing_expr env functions) exprs in
-      TElist texprs
-
-  | Eget (e1, e2) ->
-      let te1 = typing_expr env functions e1 in
-      let te2 = typing_expr env functions e2 in
-      TEget (te1, te2)
+(* Main function to type check the entire program *)
+let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
+  let global_env : (string, ty) Hashtbl.t = Hashtbl.create 17 in
+  
+  (* Type check function definitions *)
+  let type_check_def (id, params, body) : tdef =
+    let fn_env = Hashtbl.create 17 in
+    
+    (* Add function parameters to environment *)
+    List.iter (fun param -> 
+      Hashtbl.add fn_env param.id TAny
+    ) params;
+    
+    let fn = { 
+      fn_name = id.id; 
+      fn_params = List.map (fun p -> { v_name = p.id; v_ofs = 0 }) params 
+    } in
+    
+    let tbody = type_check_stmt fn_env body in
+    (fn, tbody)
+  in
+  
+  (* Type check and convert function definitions *)
+  let tdefs = List.map type_check_def defs in
+  
+  (* Add main function for global statements *)
+  let main_fn = { 
+    fn_name = "main"; 
+    fn_params = [] 
+  } in
+  let main_tstmt = type_check_stmt global_env global_stmts in
+  
+  tdefs @ [(main_fn, main_tstmt)]
