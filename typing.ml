@@ -55,21 +55,41 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       end
   | Ebinop (op, e1, e2) ->
       let t1 = infer_expr_type env e1 in
-      let t2 = infer_expr_type env e2 in
       begin match op with
+      (* Logical operations *)
+      | Band ->
+          (* Lazy AND: if first operand is falsy, return first operand's type *)
+          if t1 = TBool || t1 = TInt || t1 = TList TAny || t1 = TString then
+            if t1 = TBool && t1 <> TAny then TBool
+            else t1
+          else error "Invalid operand for and"
+      
+      | Bor ->
+          (* Lazy OR: if first operand is truthy, return first operand's type *)
+          if t1 = TBool || t1 = TInt || t1 = TList TAny || t1 = TString then
+            if t1 = TBool && t1 <> TAny then TBool
+            else t1
+          else error "Invalid operand for or"
+
       (* Arithmetic operations: only on ints *)
-      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt && t2 = TInt -> TInt
+      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt ->
+          let t2 = infer_expr_type env e2 in
+          if t2 = TInt then TInt
+          else error "Invalid operand for arithmetic operation"
       
       (* Comparisons *)
       | Blt | Ble | Bgt | Bge | Beq | Bneq -> TBool
       
-      (* Logical operations *)
-      | Band | Bor when t1 = TBool && t2 = TBool -> TBool
-      
       (* String and list concatenation *)
-      | Badd when t1 = TString && t2 = TString -> TString
-      | Badd when t1 = TList TAny && t2 = TList TAny -> t1
-      
+      | Badd when t1 = TString ->
+          let t2 = infer_expr_type env e2 in
+          if t2 = TString then TString
+          else error "Invalid operand for string concatenation"
+      | Badd when t1 = TList TAny ->
+         let t2 = infer_expr_type env e2 in
+          if t2 = TList TAny then TList TAny
+          else error "Invalid operand for list concatenation"
+
       | _ -> error "Invalid binary operation"
       end
 
@@ -105,13 +125,7 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       end
 
   | Ecall ({id = "list"; _}, args) ->
-      if List.length args = 0 then 
-        error "list() requires at least one argument"
-      else 
-        let first_type = infer_expr_type env (List.hd args) in
-        if List.for_all (fun e -> type_eq first_type (infer_expr_type env e)) args 
-        then TList first_type
-        else error "list() elements must have the same type"
+      error "list() should use with range()"
   
   | Ecall ({id = id_str; _}, args) -> 
     Printf.printf "Ecall: %s\n" id_str;
