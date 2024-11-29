@@ -27,6 +27,23 @@ let rec string_of_ty = function
   | TList t -> "list<" ^ string_of_ty t ^ ">"
   | TAny -> "any"
 
+let string_of_op = function
+  | Band -> "and"
+  | Bor -> "or"
+  | Badd -> "+"
+  | Bsub -> "-"
+  | Bmul -> "*"
+  | Bdiv -> "/"
+  | Bmod -> "%"
+  | Blt -> "<"
+  | Ble -> "<="
+  | Bgt -> ">"
+  | Bge -> ">="
+  | Beq -> "=="
+  | Bneq -> "!="
+
+(* Typed expression *)
+
 (* Type comparison with support for Any type *)
 let rec type_eq t1 t2 =
   match t1, t2 with
@@ -46,8 +63,7 @@ let type_of_const = function
 let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
   match expr with
   | Ecst c -> type_of_const c
-  | Eident _ ->
-      let id = match expr with Eident id -> id | _ -> assert false in
+  | Eident id ->
       begin try
         Hashtbl.find env id.id
       with Not_found ->
@@ -55,6 +71,8 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       end
   | Ebinop (op, e1, e2) ->
       let t1 = infer_expr_type env e1 in
+      Printf.printf "t1: %s\n" (string_of_ty t1);
+      Printf.printf "op: %s\n" (string_of_op op);
       begin match op with
       (* Logical operations *)
       | Band ->
@@ -72,9 +90,9 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
           else error "Invalid operand for or"
 
       (* Arithmetic operations: only on ints *)
-      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt ->
+      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt || t1 = TAny ->
           let t2 = infer_expr_type env e2 in
-          if t2 = TInt then TInt
+          if t2 = TInt || t2 = TAny then TInt
           else error "Invalid operand for arithmetic operation"
       
       (* Comparisons *)
@@ -97,16 +115,17 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       let t = infer_expr_type env e in
       begin match op with
       | Uneg when t = TInt -> TInt      (* Negation of int *)
-      | Unot -> TBool                   (* 'not' works on any type *)
+      | Uneg when t = TAny -> TAny      (* Negation of any *)
+      | Unot -> TBool             
       | _ -> error "Invalid unary operation"
       end
 
-  | Ecall ({id = "len"; _}, [arg]) ->
+  (* | Ecall ({id = "len"; _}, [arg]) ->
       let arg_type = infer_expr_type env arg in
       begin match arg_type with
       | TString | TList _ -> TInt
       | _ -> error "len() only works on strings or lists"
-      end
+      end *)
 
   | Ecall ({id = "len"; _}, args) ->
       (* error when no argument and multiple argument*)
@@ -120,8 +139,7 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       let arg_type = infer_expr_type env arg in
       begin match arg_type with
       | TInt -> TList TInt
-      | TAny -> TList TInt
-      | _ -> error "list(range()) requires an integer argument"
+      | _ -> TList TInt
       end
 
   | Ecall ({id = "list"; _}, args) ->
@@ -140,6 +158,7 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       let index_type = infer_expr_type env e2 in
       begin match list_type, index_type with
       | TList t, TInt -> t
+      | TList _, TAny -> TAny
       | TString, TInt -> TString
       | _ -> error "Invalid indexing operation"
       end
@@ -187,6 +206,7 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
 
   | Sreturn expr ->
       let texpr = type_expr expr in
+      let _ = infer_expr_type env expr in
       TSreturn texpr
 
   | Sassign (id, expr) ->
@@ -210,15 +230,15 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       let texpr = type_expr expr in
       let var = { v_name = id.id; v_ofs = 0 } in
       let list_type = infer_expr_type env expr in
-      Printf.printf "list_type: %s\n" (string_of_ty list_type);
       begin match list_type with
       | TList elem_type ->
           Hashtbl.add env id.id elem_type;
-          let tbody = type_check_stmt env body in
-          TSfor (var, texpr, tbody)
       | _ -> 
-        error ~loc:id.loc "For loop requires a list"
-      end
+          Hashtbl.add env id.id TAny;
+      end;
+      Printf.printf "list_type: %s\n" (string_of_ty list_type);
+      let tbody = type_check_stmt env body in
+      TSfor (var, texpr, tbody)
 
   | Seval expr ->
       let texpr = type_expr expr in
@@ -232,11 +252,12 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       let list_type = infer_expr_type env list_expr in
       let index_type = infer_expr_type env index_expr in
       let value_type = infer_expr_type env value_expr in
-      begin match list_type, index_type with
+      (* begin match list_type, index_type with
       | TList elem_type, TInt when type_eq elem_type value_type -> 
           TSset (tlist, tindex, tvalue)
       | _ -> error "Invalid list assignment"
-      end
+      end *)
+      TSset(tlist, tindex, tvalue)
 
 (* Main function to type check the entire program *)
 let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
