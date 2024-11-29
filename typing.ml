@@ -156,9 +156,13 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       (* Indexing into a list or string *)
       let list_type = infer_expr_type env e1 in
       let index_type = infer_expr_type env e2 in
+      (* Printf.printf "list_type: %s\n" (string_of_ty list_type);
+      Printf.printf "index_type: %s\n" (string_of_ty index_type); *)
       begin match list_type, index_type with
       | TList t, TInt -> t
       | TList _, TAny -> TAny
+      | TAny, TAny -> TAny
+      | TAny, TInt -> TAny
       | TString, TInt -> TString
       | _ -> error "Invalid indexing operation"
       end
