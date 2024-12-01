@@ -8,6 +8,8 @@ type: minipython.exe
 
 ir: minipython.exe
 	./minipython.exe --debug --ir-only test.py
+	llc-14 test.ll -o test.s
+	./a.out
 
 llvm: minipython.exe
 	llc-16 test.ll -o test.s

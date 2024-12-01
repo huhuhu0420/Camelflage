@@ -15,7 +15,7 @@ let i32_t   = i32_type    context
 let i1_t    = i1_type     context
 let void_t  = void_type   context
 let i8_t    = i8_type     context
-let str_t   = pointer_type context 
+let str_t   = pointer_type i8_t
 
 (* Symbol table for variables *)
 let named_values:(string, llvalue) Hashtbl.t = Hashtbl.create 10
@@ -33,7 +33,7 @@ let rec codegen_expr = function
   | TEvar v             ->
       (try
          let var = Hashtbl.find named_values v.v_name in
-         build_load (type_of var) var v.v_name builder
+         build_load var v.v_name builder
        with Not_found -> failwith ("Unknown variable name " ^ v.v_name))
   | TEbinop (op, lhs, rhs) ->
       let l = codegen_expr lhs in
@@ -67,7 +67,7 @@ let rec codegen_expr = function
       if Array.length params = List.length args then
         let args = List.map codegen_expr args in
         let args = Array.of_list args in
-        build_call (type_of callee) callee args "calltmp" builder
+        build_call callee args "calltmp" builder
       else
         failwith "Incorrect number of arguments passed"
   | TElist _            ->
@@ -144,14 +144,14 @@ let rec codegen_stmt = function
     if arg_type = i64_t then
       let fmt_str = build_global_stringptr "%lld\n" "fmt" builder in
       Printf.printf "Printing integer\n";
-      ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg |] "" builder)
+      ignore (build_call printf_func [| fmt_str; arg |] "" builder)
     else if arg_type = i1_t then
       let fmt_str = build_global_stringptr "%d\n" "fmt" builder in
       let arg_i32 = build_zext arg i32_t "booltmp" builder in
-      ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg_i32 |] "" builder)
+      ignore (build_call printf_func [| fmt_str; arg_i32 |] "" builder)
     else if arg_type = str_t then
       let fmt_str = build_global_stringptr "%s\n" "fmt" builder in
-      ignore (build_call (type_of printf_func) printf_func [| fmt_str; arg |] "" builder)
+      ignore (build_call printf_func [| fmt_str; arg |] "" builder)
     else
       failwith "Unsupported type in print"
   | TSblock stmts ->
