@@ -42,8 +42,6 @@ let string_of_op = function
   | Beq -> "=="
   | Bneq -> "!="
 
-(* Typed expression *)
-
 (* Type comparison with support for Any type *)
 let rec type_eq t1 t2 =
   match t1, t2 with
@@ -59,41 +57,39 @@ let type_of_const = function
   | Cint _ -> TInt
   | Cstring _ -> TString
 
-(* Infer type for expressions *)
-let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
+(* Merged type inference and expression conversion *)
+let rec type_check_expr (env : (string, ty) Hashtbl.t) (expr : expr) : ty * texpr =
   match expr with
-  | Ecst c -> type_of_const c
-  | Eident id ->
-      begin try
-        Hashtbl.find env id.id
-      with Not_found ->
-        error ~loc:id.loc "Variable %s not found" id.id
-      end
-  | Ebinop (op, e1, e2) ->
-      let _ = infer_expr_type env e1 in
-      begin match op with
-      | Band | Bor | Beq | Bneq | Blt | Ble | Bgt | Bge ->
-        TBool
+  | Ecst c ->
+      let ty = type_of_const c in
+      (ty, TEcst c)
 
-      | Badd | Bsub | Bmul | Bdiv | Bmod ->
-          TAny
-      end
+  | Eident id ->
+      let ty = try 
+        Hashtbl.find env id.id 
+      with Not_found ->
+        error ~loc:id.loc "Variable %s not found" id.id in
+      let var = { v_name = id.id; v_ofs = 0 } in
+      (ty, TEvar var)
+
+  | Ebinop (op, e1, e2) ->
+      let t1, te1 = type_check_expr env e1 in
+      let t2, te2 = type_check_expr env e2 in
+      let ty = match op with
+      | Band | Bor | Beq | Bneq | Blt | Ble | Bgt | Bge -> TBool
+      | Badd | Bsub | Bmul | Bdiv | Bmod -> TAny
+      in
+      (ty, TEbinop (op, te1, te2))
 
   | Eunop (op, e) ->
-      let t = infer_expr_type env e in
-      begin match op with
-      | Uneg when t = TInt -> TInt      (* Negation of int *)
-      | Uneg when t = TAny -> TAny      (* Negation of any *)
+      let t, te = type_check_expr env e in
+      let ty = match op with
+      | Uneg when t = TInt -> TInt
+      | Uneg when t = TAny -> TAny
       | Unot -> TBool             
       | _ -> error "Invalid unary operation"
-      end
-
-  (* | Ecall ({id = "len"; _}, [arg]) ->
-      let arg_type = infer_expr_type env arg in
-      begin match arg_type with
-      | TString | TList _ -> TInt
-      | _ -> error "len() only works on strings or lists"
-      end *)
+      in
+      (ty, TEunop (op, te))
 
   | Ecall ({id = "len"; _}, args) ->
       (* error when no argument and multiple argument*)
@@ -101,103 +97,67 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       | [arg] -> arg
       | _ -> error "len() requires exactly one argument"
       in
-      TInt
+      let _, targ = type_check_expr env (List.hd args) in
+      (TInt, TEcall ({ fn_name = "len"; fn_params = [{ v_name = "_"; v_ofs = 0 }] }, [targ]))
   
   | Ecall ({id = "list"; _}, [Ecall ({id = "range"; _}, [arg])]) ->
-      let arg_type = infer_expr_type env arg in
-      begin match arg_type with
-      | TInt -> TList TInt
-      | _ -> TList TInt
-      end
+      let _, targ = type_check_expr env arg in
+      (TList TInt, TEcall ({ fn_name = "list"; fn_params = [{ v_name = "_"; v_ofs = 0 }] }, 
+                             [TEcall ({ fn_name = "range"; fn_params = [{ v_name = "_"; v_ofs = 0 }] }, [targ])]))
 
   | Ecall ({id = "list"; _}, args) ->
-      error "list() should use with range()"
+      error "list() should be used with range()"
   
   | Ecall ({id = id_str; _}, args) -> 
-    TAny
-      (* begin try
-        let _ = Hashtbl.find env id_str in
-        TAny
-      with Not_found ->
-        error "Function not found"
-      end *)
-
+      let targs = List.map (fun arg -> 
+        let _, targ = type_check_expr env arg in targ
+      ) args in
+      let fn = { 
+        fn_name = id_str; 
+        fn_params = List.map (fun _ -> { v_name = "_"; v_ofs = 0 }) args 
+      } in
+      (TAny, TEcall (fn, targs))
 
   | Elist exprs ->
-    TList TAny
+      let texprs = List.map (fun expr -> 
+        let _, texpr = type_check_expr env expr in texpr
+      ) exprs in
+      (TList TAny, TElist texprs)
 
   | Eget (e1, e2) ->
-      (* Indexing into a list or string *)
-      let list_type = infer_expr_type env e1 in
-      let index_type = infer_expr_type env e2 in
-      (* Printf.printf "list_type: %s\n" (string_of_ty list_type);
-      Printf.printf "index_type: %s\n" (string_of_ty index_type); *)
-      begin match list_type, index_type with
+      let t1, te1 = type_check_expr env e1 in
+      let t2, te2 = type_check_expr env e2 in
+      let ty = begin match t1, t2 with
       | TList t, TInt -> t
       | TList _, TAny -> TAny
       | TAny, TAny -> TAny
       | TAny, TInt -> TAny
       | TString, TInt -> TString
       | _ -> error "Invalid indexing operation"
-      end
-
-(* Convert expression to typed expression *)
-let rec type_expr (expr : expr) : texpr =
-  match expr with
-  | Ecst c -> TEcst c
-  | Eident id -> 
-      let var = { v_name = id.id; v_ofs = 0 } in
-      TEvar var
-  | Ebinop (op, e1, e2) ->
-      let te1 = type_expr e1 in
-      let te2 = type_expr e2 in
-      TEbinop (op, te1, te2)
-  | Eunop (op, e) ->
-      let te = type_expr e in
-      TEunop (op, te)
-  | Ecall ({id = "range"; _}, [arg]) ->
-      let targ = type_expr arg in
-      TErange targ
-  | Ecall (id, args) ->
-      let targs = List.map type_expr args in
-      let fn = { 
-        fn_name = id.id; 
-        fn_params = List.map (fun _ -> { v_name = "_"; v_ofs = 0 }) args 
-      } in
-      TEcall (fn, targs)
-  | Elist exprs ->
-      let texprs = List.map type_expr exprs in
-      TElist texprs
-  | Eget (e1, e2) ->
-      let te1 = type_expr e1 in
-      let te2 = type_expr e2 in
-      TEget (te1, te2)
+      end in
+      (ty, TEget (te1, te2))
 
 (* Type check statements *)
 let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
-      Printf.printf "env: %s\n" (Hashtbl.fold (fun k v acc -> acc ^ k ^ " -> " ^ (string_of_ty v) ^ "\n") env "");
   match stmt with
   | Sif (cond, then_stmt, else_stmt) ->
-      let tcond = type_expr cond in
+      let _, tcond = type_check_expr env cond in
       let tthen = type_check_stmt env then_stmt in
       let telse = type_check_stmt env else_stmt in
       TSif (tcond, tthen, telse)
 
   | Sreturn expr ->
-      let texpr = type_expr expr in
-      let _ = infer_expr_type env expr in
+      let _, texpr = type_check_expr env expr in
       TSreturn texpr
 
   | Sassign (id, expr) ->
-      let texpr = type_expr expr in
+      let expr_type, texpr = type_check_expr env expr in
       let var = { v_name = id.id; v_ofs = 0 } in
-      let expr_type = infer_expr_type env expr in
       Hashtbl.replace env id.id expr_type;
       TSassign (var, texpr)
 
   | Sprint expr ->
-      let texpr = type_expr expr in
-      let _ = infer_expr_type env expr in
+      let _, texpr = type_check_expr env expr in
       TSprint texpr
 
   | Sblock stmts ->
@@ -205,9 +165,8 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       TSblock tstmts
 
   | Sfor (id, expr, body) ->
-      let texpr = type_expr expr in
+      let list_type, texpr = type_check_expr env expr in
       let var = { v_name = id.id; v_ofs = 0 } in
-      let list_type = infer_expr_type env expr in
       begin match list_type with
       | TList elem_type ->
           Hashtbl.add env id.id elem_type;
@@ -218,22 +177,13 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       TSfor (var, texpr, tbody)
 
   | Seval expr ->
-      let texpr = type_expr expr in
-      let _ = infer_expr_type env expr in
+      let _, texpr = type_check_expr env expr in
       TSeval texpr
 
   | Sset (list_expr, index_expr, value_expr) ->
-      let tlist = type_expr list_expr in
-      let tindex = type_expr index_expr in
-      let tvalue = type_expr value_expr in
-      let list_type = infer_expr_type env list_expr in
-      let index_type = infer_expr_type env index_expr in
-      let value_type = infer_expr_type env value_expr in
-      (* begin match list_type, index_type with
-      | TList elem_type, TInt when type_eq elem_type value_type -> 
-          TSset (tlist, tindex, tvalue)
-      | _ -> error "Invalid list assignment"
-      end *)
+      let _, tlist = type_check_expr env list_expr in
+      let _, tindex = type_check_expr env index_expr in
+      let _, tvalue = type_check_expr env value_expr in
       TSset(tlist, tindex, tvalue)
 
 (* Main function to type check the entire program *)
