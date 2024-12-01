@@ -1,2 +1,4 @@
 
-len([3, 4])
+def f(x):
+    return f()
+print(0)

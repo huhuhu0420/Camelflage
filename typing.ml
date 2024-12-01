@@ -42,13 +42,14 @@ let string_of_op = function
   | Beq -> "=="
   | Bneq -> "!="
 
-(* Type comparison with support for Any type *)
-let rec type_eq t1 t2 =
-  match t1, t2 with
-  | TAny, _ | _, TAny -> true
-  | TNone, TNone | TInt, TInt | TBool, TBool | TString, TString -> true
-  | TList t1', TList t2' -> type_eq t1' t2'
-  | _ -> false
+(* Track function definitions to prevent infinite recursion and validate calls *)
+type func_info = {
+  name: string;
+  param_count: int;
+}
+
+(* Global function definition tracking *)
+let function_definitions : (string, func_info) Hashtbl.t = Hashtbl.create 17
 
 (* Get type of constant *)
 let type_of_const = function
@@ -109,13 +110,28 @@ let rec type_check_expr (env : (string, ty) Hashtbl.t) (expr : expr) : ty * texp
       error "list() should be used with range()"
   
   | Ecall ({id = id_str; _}, args) -> 
+      (* Check if function is defined *)
+      let func_info = try 
+        Hashtbl.find function_definitions id_str
+      with Not_found ->
+        error ~loc:dummy_loc "Function %s not defined" id_str
+      in
+
+      (* Validate argument count *)
+      if List.length args != func_info.param_count then
+        error ~loc:dummy_loc "Function %s expects %d arguments, got %d" 
+          id_str func_info.param_count (List.length args);
+
+      (* Type check arguments *)
       let targs = List.map (fun arg -> 
         let _, targ = type_check_expr env arg in targ
       ) args in
+
       let fn = { 
         fn_name = id_str; 
         fn_params = List.map (fun _ -> { v_name = "_"; v_ofs = 0 }) args 
       } in
+      
       (TAny, TEcall (fn, targs))
 
   | Elist exprs ->
@@ -189,6 +205,20 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
 (* Main function to type check the entire program *)
 let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
   let global_env : (string, ty) Hashtbl.t = Hashtbl.create 17 in
+
+  (* First pass: register function definitions *)
+  List.iter (fun (id, params, _) ->
+    let func_info = {
+      name = id.id;
+      param_count = List.length params;
+    } in
+    
+    (* Check for duplicate function definitions *)
+    if Hashtbl.mem function_definitions id.id then
+      error ~loc:id.loc "Duplicate function definition for %s" id.id;
+    
+    Hashtbl.add function_definitions id.id func_info
+  ) defs;
   
   (* Type check function definitions *)
   let type_check_def (id, params, body) : tdef =
@@ -212,8 +242,9 @@ let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
       fn_name = id.id; 
       fn_params = List.map (fun p -> { v_name = p.id; v_ofs = 0 }) params 
     } in
-    
+
     let tbody = type_check_stmt fn_env body in
+    
     (fn, tbody)
   in
   
