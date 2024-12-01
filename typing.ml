@@ -70,45 +70,13 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
         error ~loc:id.loc "Variable %s not found" id.id
       end
   | Ebinop (op, e1, e2) ->
-      let t1 = infer_expr_type env e1 in
-      Printf.printf "t1: %s\n" (string_of_ty t1);
-      Printf.printf "op: %s\n" (string_of_op op);
+      let _ = infer_expr_type env e1 in
       begin match op with
-      (* Logical operations *)
-      | Band ->
-          (* Lazy AND: if first operand is falsy, return first operand's type *)
-          if t1 = TBool || t1 = TInt || t1 = TList TAny || t1 = TString then
-            if t1 = TBool && t1 <> TAny then TBool
-            else t1
-          else error "Invalid operand for and"
-      
-      | Bor ->
-          (* Lazy OR: if first operand is truthy, return first operand's type *)
-          if t1 = TBool || t1 = TInt || t1 = TList TAny || t1 = TString then
-            if t1 = TBool && t1 <> TAny then TBool
-            else t1
-          else error "Invalid operand for or"
+      | Band | Bor | Beq | Bneq | Blt | Ble | Bgt | Bge ->
+        TBool
 
-      (* Arithmetic operations: only on ints *)
-      | Badd | Bsub | Bmul | Bdiv | Bmod when t1 = TInt || t1 = TAny ->
-          let t2 = infer_expr_type env e2 in
-          if t2 = TInt || t2 = TAny then TInt
-          else error "Invalid operand for arithmetic operation"
-      
-      (* Comparisons *)
-      | Blt | Ble | Bgt | Bge | Beq | Bneq -> TBool
-      
-      (* String and list concatenation *)
-      | Badd when t1 = TString ->
-          let t2 = infer_expr_type env e2 in
-          if t2 = TString then TString
-          else error "Invalid operand for string concatenation"
-      | Badd when t1 = TList TAny ->
-         let t2 = infer_expr_type env e2 in
-          if t2 = TList TAny then TList TAny
-          else error "Invalid operand for list concatenation"
-
-      | _ -> error "Invalid binary operation"
+      | Badd | Bsub | Bmul | Bdiv | Bmod ->
+          TAny
       end
 
   | Eunop (op, e) ->
@@ -146,8 +114,14 @@ let rec infer_expr_type (env : (string, ty) Hashtbl.t) (expr : expr) : ty =
       error "list() should use with range()"
   
   | Ecall ({id = id_str; _}, args) -> 
-    Printf.printf "Ecall: %s\n" id_str;
-    TAny  (* Dynamic function calls *)
+    TAny
+      (* begin try
+        let _ = Hashtbl.find env id_str in
+        TAny
+      with Not_found ->
+        error "Function not found"
+      end *)
+
 
   | Elist exprs ->
     TList TAny
@@ -181,7 +155,7 @@ let rec type_expr (expr : expr) : texpr =
   | Eunop (op, e) ->
       let te = type_expr e in
       TEunop (op, te)
-  | Ecall ({id = "range"; _} as id, [arg]) ->
+  | Ecall ({id = "range"; _}, [arg]) ->
       let targ = type_expr arg in
       TErange targ
   | Ecall (id, args) ->
@@ -201,6 +175,7 @@ let rec type_expr (expr : expr) : texpr =
 
 (* Type check statements *)
 let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
+      Printf.printf "env: %s\n" (Hashtbl.fold (fun k v acc -> acc ^ k ^ " -> " ^ (string_of_ty v) ^ "\n") env "");
   match stmt with
   | Sif (cond, then_stmt, else_stmt) ->
       let tcond = type_expr cond in
@@ -226,8 +201,7 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       TSprint texpr
 
   | Sblock stmts ->
-      let new_env = Hashtbl.copy env in
-      let tstmts = List.map (type_check_stmt new_env) stmts in
+      let tstmts = List.map (type_check_stmt env) stmts in
       TSblock tstmts
 
   | Sfor (id, expr, body) ->
@@ -240,7 +214,6 @@ let rec type_check_stmt (env : (string, ty) Hashtbl.t) (stmt : stmt) : tstmt =
       | _ -> 
           Hashtbl.add env id.id TAny;
       end;
-      Printf.printf "list_type: %s\n" (string_of_ty list_type);
       let tbody = type_check_stmt env body in
       TSfor (var, texpr, tbody)
 
