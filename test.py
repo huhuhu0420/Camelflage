@@ -1,5 +1,4 @@
 
-def increment(x):
-    return x + 1
-
-y = increment(5)
+def f(x):
+    return f()
+print(0)

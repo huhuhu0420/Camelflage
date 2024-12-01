@@ -6,5 +6,22 @@
 
 (executable
  (name minipython)
+ (modules 
+  minipython
+  lexer
+  parser
+  ast
+  Codegen
+  typing
+  PrintTypedAst
+  printAst
+  compile
+  x86_64
+ )
+ (libraries 
+  llvm
+  llvm.bitwriter
+  llvm.analysis
+ )
  (promote (until-clean))
  (flags ()))
