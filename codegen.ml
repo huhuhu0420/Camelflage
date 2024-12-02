@@ -29,29 +29,85 @@ let codegen_const = function
 
 (* Recursive code generation for expressions *)
 let rec codegen_expr = function
-  | TEcst c             -> codegen_const c
-  | TEvar v             ->
+  | TEcst c -> codegen_const c
+  | TEvar v ->
       (try
          let var = Hashtbl.find named_values v.v_name in
          build_load var v.v_name builder
        with Not_found -> failwith ("Unknown variable name " ^ v.v_name))
   | TEbinop (op, lhs, rhs) ->
-      let l = codegen_expr lhs in
-      let r = codegen_expr rhs in
       (match op with
-       | Badd -> build_add l r "addtmp" builder
-       | Bsub -> build_sub l r "subtmp" builder
-       | Bmul -> build_mul l r "multmp" builder
-       | Bdiv -> build_sdiv l r "divtmp" builder
-       | Bmod -> build_srem l r "modtmp" builder
-       | Beq  -> build_icmp Icmp.Eq l r "eqtmp" builder
-       | Bneq -> build_icmp Icmp.Ne l r "neqtmp" builder
-       | Blt  -> build_icmp Icmp.Slt l r "lttmp" builder
-       | Ble  -> build_icmp Icmp.Sle l r "letmp" builder
-       | Bgt  -> build_icmp Icmp.Sgt l r "gttmp" builder
-       | Bge  -> build_icmp Icmp.Sge l r "getmp" builder
-       | Band -> build_and l r "andtmp" builder
-       | Bor  -> build_or l r "ortmp" builder)
+       (* Implement short-circuit evaluation for AND *)
+       | Band ->
+          let start_bb = insertion_block builder in
+          let the_function = block_parent start_bb in
+
+          (* Evaluate left-hand side *)
+          let l = codegen_expr lhs in
+
+          (* Create blocks for short-circuit paths *)
+          let check_rhs_bb = append_block context "and_check_rhs" the_function in
+          let final_bb = append_block context "and_final" the_function in
+
+          (* Result phi node *)
+          position_at_end start_bb builder;
+          let result_ptr = build_alloca i1_t "and_result" builder in
+
+          (* Conditional branch based on left-hand side *)
+          ignore (build_cond_br l check_rhs_bb final_bb builder);
+
+          (* Check right-hand side block *)
+          position_at_end check_rhs_bb builder;
+          let r = codegen_expr rhs in
+          ignore (build_store r result_ptr builder);
+          ignore (build_br final_bb builder);
+
+          (* Final block with phi node *)
+          position_at_end final_bb builder;
+          build_load result_ptr "and_final_result" builder
+
+       (* Implement short-circuit evaluation for OR *)
+      | Bor ->
+          let start_bb = insertion_block builder in
+          let the_function = block_parent start_bb in
+
+          (* Evaluate left-hand side *)
+          let l = codegen_expr lhs in
+
+          (* Create blocks for short-circuit paths *)
+          let check_rhs_bb = append_block context "or_check_rhs" the_function in
+          let final_bb = append_block context "or_final" the_function in
+
+          (* Result phi node *)
+          position_at_end start_bb builder;
+          let result_ptr = build_alloca i1_t "or_result" builder in
+
+          (* Conditional branch based on left-hand side *)
+          ignore (build_cond_br l final_bb check_rhs_bb builder);
+
+          (* Check right-hand side block *)
+          position_at_end check_rhs_bb builder;
+          let r = codegen_expr rhs in
+          ignore (build_store r result_ptr builder);
+          ignore (build_br final_bb builder);
+
+          (* Final block with phi node *)
+          position_at_end final_bb builder;
+          build_load result_ptr "or_final_result" builder
+
+       (* Existing binary operations *)
+      | Badd -> build_add (codegen_expr lhs) (codegen_expr rhs) "addtmp" builder
+      | Bsub -> build_sub (codegen_expr lhs) (codegen_expr rhs) "subtmp" builder
+      | Bmul -> build_mul (codegen_expr lhs) (codegen_expr rhs) "multmp" builder
+      | Bdiv -> build_sdiv (codegen_expr lhs) (codegen_expr rhs) "divtmp" builder
+      | Bmod -> build_srem (codegen_expr lhs) (codegen_expr rhs) "modtmp" builder
+      | Beq  -> build_icmp Icmp.Eq (codegen_expr lhs) (codegen_expr rhs) "eqtmp" builder
+      | Bneq -> build_icmp Icmp.Ne (codegen_expr lhs) (codegen_expr rhs) "neqtmp" builder
+      | Blt  -> build_icmp Icmp.Slt (codegen_expr lhs) (codegen_expr rhs) "lttmp" builder
+      | Ble  -> build_icmp Icmp.Sle (codegen_expr lhs) (codegen_expr rhs) "letmp" builder
+      | Bgt  -> build_icmp Icmp.Sgt (codegen_expr lhs) (codegen_expr rhs) "gttmp" builder
+      | Bge  -> build_icmp Icmp.Sge (codegen_expr lhs) (codegen_expr rhs) "getmp" builder)
+
   | TEunop (op, e)      ->
       let v = codegen_expr e in
       (match op with
