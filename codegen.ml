@@ -146,9 +146,13 @@ let rec codegen_stmt = function
       Printf.printf "Printing integer\n";
       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
     else if arg_type = i1_t then
-      let fmt_str = build_global_stringptr "%d\n" "fmt" builder in
-      let arg_i32 = build_zext arg i32_t "booltmp" builder in
-      ignore (build_call printf_func [| fmt_str; arg_i32 |] "" builder)
+      (* print with True/False *)
+      let fmt_str = build_global_stringptr "%s\n" "fmt" builder in
+      let true_str = build_global_stringptr "True" "true" builder in
+      let false_str = build_global_stringptr "False" "false" builder in
+      let cond = build_icmp Icmp.Eq arg (const_int i1_t 1) "cond" builder in
+      let str = build_select cond true_str false_str "str" builder in
+      ignore (build_call printf_func [| fmt_str; str |] "" builder)
     else if arg_type = str_t then
       let fmt_str = build_global_stringptr "%s\n" "fmt" builder in
       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
