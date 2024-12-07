@@ -24,8 +24,10 @@ let str_t   = pointer_type i8_t
    - i64 length
    - i8** pointer to array of elements
 *)
+let box_t = named_struct_type context "box_t"
+let _ = struct_set_body box_t [| i8_t; array_type i8_t 8 |] false
 let list_t = named_struct_type context "list_t"
-let _ = struct_set_body list_t [| i64_t; pointer_type (pointer_type i8_t) |] false
+let _ = struct_set_body list_t [| i64_t; pointer_type (pointer_type box_t) |] false
 
 (* Symbol table for variables *)
 let named_values:(string, llvalue) Hashtbl.t = Hashtbl.create 10
@@ -52,22 +54,70 @@ let printf_func =
    - store the integer
    - return i8* pointer
 *)
-let box_int (i:int) =
-  let ptr = build_call malloc_fn [| const_int i64_t 8 |] "int_ptr" builder in
-  let ptr_i64 = build_bitcast ptr (pointer_type i64_t) "int_ptr_i64" builder in
-  ignore (build_store (const_int i64_t i) ptr_i64 builder);
-  ptr (* i8* *)
+let box_int i =
+  (* Allocate 9 bytes: 1 for tag, 8 for data *)
+  let box_ptr_i8 = build_call malloc_fn [| const_int i64_t 9 |] "box_ptr_raw" builder in
+  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+
+  (* Store tag = 0 for int *)
+  let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+  ignore (build_store (const_int i8_t 0) tag_ptr builder);
+
+  (* Store the integer in the [8 x i8] field *)
+  let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  ignore (build_store (const_int i64_t i) data_ptr_i64 builder);
+
+  box_ptr_i8
+
 
 (* Box a boolean by treating it as an int (0 or 1) *)
-let box_bool (b:bool) =
-  box_int (if b then 1 else 0)
+let box_bool b =
+  let box_ptr_i8 = build_call malloc_fn [| const_int i64_t 9 |] "box_ptr_raw" builder in
+  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
 
-(* For strings, we already get i8* from build_global_stringptr, so no boxing needed.
-   However, to ensure uniformity, we could just return it as is. *)
+  (* tag = 1 for bool *)
+  let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+  ignore (build_store (const_int i8_t 1) tag_ptr builder);
 
-(* Box a list_t* into i8* *)
-let box_list lptr =
-  build_bitcast lptr (pointer_type i8_t) "list_i8_ptr" builder
+  (* Store bool as 0 or 1 in 64-bit *)
+  let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  let bool_val = if b then 1 else 0 in
+  ignore (build_store (const_int i64_t bool_val) data_ptr_i64 builder);
+
+  box_ptr_i8
+
+let box_string str_val =
+let box_ptr_i8 = build_call malloc_fn [| const_int i64_t 9 |] "box_ptr_raw" builder in
+let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+
+(* tag = 2 for string *)
+let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+ignore (build_store (const_int i8_t 2) tag_ptr builder);
+
+(* Store the string pointer in data *)
+let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+let data_ptr_i8p = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) "data_ptr_i8p" builder in
+ignore (build_store str_val data_ptr_i8p builder);
+
+box_ptr_i8
+
+let box_list list_ptr_val =
+  let box_ptr_i8 = build_call malloc_fn [| const_int i64_t 9 |] "box_ptr_raw" builder in
+  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+
+  (* tag = 3 for list *)
+  let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+  ignore (build_store (const_int i8_t 3) tag_ptr builder);
+
+  (* Store the list pointer in data *)
+  let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+  let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+  ignore (build_store list_ptr_val data_ptr_listp builder);
+
+  box_ptr_i8
+
 
 (* Codegen for constants *)
 let codegen_const = function
@@ -82,10 +132,7 @@ let rec codegen_expr_ref = ref (fun _ -> const_null i64_t)
 (* Codegen a TElist *)
 let codegen_list (elements: texpr list) =
   let length = List.length elements in
-
-  (* Allocate the list_t structure (just allocate a fixed size for simplicity).
-     Our list_t has two fields: i64 length and i8** pointer.
-     We'll assume it's always 16 bytes on a 64-bit system (8 bytes for i64 + 8 for i8* *)
+  (* Allocate the list_t structure: { i64, box_t** } *)
   let list_ptr_i8 = build_call malloc_fn [| const_int i64_t 16 |] "list_ptr_raw" builder in
   let list_ptr = build_bitcast list_ptr_i8 (pointer_type list_t) "list_ptr" builder in
 
@@ -93,56 +140,62 @@ let codegen_list (elements: texpr list) =
   let length_ptr = build_struct_gep list_ptr 0 "length_ptr" builder in
   ignore (build_store (const_int i64_t length) length_ptr builder);
 
-  (* Allocate space for the elements array:
-     Each element is an i8*, which is 8 bytes.
-     length * 8 bytes total.
-  *)
+  (* Allocate space for the elements array: box_t* each (8 bytes per pointer) *)
   let total_elems_size = length * 8 in
-  let elem_array = build_call malloc_fn [| const_int i64_t total_elems_size |] "elem_array_i8" builder in
-  let elem_array_ptr = build_bitcast elem_array (pointer_type (pointer_type i8_t)) "elem_array_ptr" builder in
+  let elem_array_raw = build_call malloc_fn [| const_int i64_t total_elems_size |] "elem_array_raw" builder in
+  let elem_array = build_bitcast elem_array_raw (pointer_type (pointer_type box_t)) "elem_array" builder in
 
-  (* Store elem_array_ptr in the list structure *)
+  (* Store elem_array in the list structure *)
   let arr_ptr_ptr = build_struct_gep list_ptr 1 "arr_ptr_ptr" builder in
-  ignore (build_store elem_array_ptr arr_ptr_ptr builder);
+  ignore (build_store elem_array arr_ptr_ptr builder);
 
-  (* Evaluate and store each element *)
+  (* Evaluate and box each element *)
   List.iteri (fun i el ->
     let val_ll = !codegen_expr_ref el in
-    (* val_ll might be i64, i1, or a pointer. We must box as i8*. *)
-    let val_ptr = 
-      let t = type_of val_ll in
+
+    (* Determine type of val_ll and box accordingly *)
+    let t = type_of val_ll in
+    let boxed_val =
       if t = i64_t then
-        (* Box integer *)
-        let const_val = match el with
-          | TEcst (Cint i_val) -> box_int (Int64.to_int i_val)
-          | TEcst (Cbool b_val) -> box_bool b_val
-          | _ ->
-              (* If we have some arithmetic expression returning i64, just box it *)
-              let int_var = build_call malloc_fn [| const_int i64_t 8 |] "int_tmp" builder in
-              let int_var_i64 = build_bitcast int_var (pointer_type i64_t) "int_var_i64" builder in
-              ignore (build_store val_ll int_var_i64 builder);
-              int_var
-        in const_val
+        (match el with
+         | TEcst (Cint i_val) ->
+             box_int (Int64.to_int i_val)
+         | TEcst (Cbool b_val) ->
+             box_bool b_val
+         | _ ->
+             (* Treat as int *)
+             let i64_ptr = build_call malloc_fn [| const_int i64_t 9 |] "int_box" builder in
+             let box_ptr = build_bitcast i64_ptr (pointer_type box_t) "box_ptr" builder in
+             (* tag = 0 for int *)
+             let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+             ignore (build_store (const_int i8_t 0) tag_ptr builder);
+             let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+             let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+             ignore (build_store val_ll data_ptr_i64 builder);
+             i64_ptr
+        )
       else if t = i1_t then
-        (* Box bool *)
-        let bool_val = build_zext val_ll i64_t "bool_to_i64" builder in
-        box_int (Int64.to_int (match int64_of_const bool_val with Some x -> x | None -> 0L))
+        let bool_val = match int64_of_const (build_zext val_ll i64_t "bool_zext" builder) with
+          | Some x -> x
+          | None -> 0L
+        in
+        box_bool (bool_val = 1L)
       else if t = str_t then
-        (* Already i8* (string), no boxing needed *)
-        val_ll
+        box_string val_ll
       else if classify_type t = TypeKind.Pointer then
-        (* Might be a nested list or some pointer type. We assume if it's a TElist,
-           codegen_expr returns a %list_t*, so box it. *)
+        (* Nested list *)
         box_list val_ll
       else
-        failwith "Unsupported element type in TElist"
+        failwith "Unsupported type in TElist"
     in
-    let elem_ptr = build_gep elem_array_ptr [| const_int i64_t i |] ("elem_ptr_" ^ string_of_int i) builder in
-    ignore (build_store val_ptr elem_ptr builder)
+
+    let elem_ptr = build_gep elem_array [| const_int i64_t i |] ("elem_ptr_" ^ string_of_int i) builder in
+    let boxed_ptr = build_bitcast boxed_val (pointer_type box_t) "boxed_ptr" builder in
+    ignore (build_store boxed_ptr elem_ptr builder);
   ) elements;
 
-  (* Return the pointer to the newly created list *)
   list_ptr
+
 
 (* Now we define codegen_expr fully, including TElist handling *)
 let rec codegen_expr = function
