@@ -47,7 +47,11 @@ let printf_func =
       let printf_t = var_arg_function_type i32_t [| str_t |] in
       declare_function "printf" printf_t the_module
 
-(* Helper functions for boxing values *)
+let print_list_t = function_type void_t [| pointer_type list_t |]
+let print_list_fn =
+  match lookup_function "print_list" the_module with
+  | Some f -> f
+  | None -> declare_function "print_list" print_list_t the_module
 
 (* Box an integer into i8*:
    - allocate 8 bytes for a 64-bit int
@@ -365,6 +369,9 @@ let rec codegen_stmt = function
     else if arg_type = str_t then
       let fmt_str = build_global_stringptr "%s\n" "fmt" builder in
       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
+    else if arg_type = pointer_type list_t then
+      (* call print_list *)
+      ignore (build_call print_list_fn [| arg |] "" builder)
     else
       (* For lists or other types, we'd need a specialized print function.
          For simplicity, fail here or implement a runtime print. *)
@@ -455,4 +462,157 @@ let write_ir_to_file filename =
      write_module_to_file "output.bc"
 *)
 
-let () = codegen_expr_ref := codegen_expr
+(* Helper to print a single boxed element *)
+let print_boxed_element builder elem_ptr =
+  let tag_ptr = build_struct_gep elem_ptr 0 "tag_ptr_elem" builder in
+  let tag_val = build_load tag_ptr "tag_val" builder in
+
+  (* We'll switch on the tag_val to print different types *)
+  let i8_t = i8_type context in
+  let sw_bb = insertion_block builder in
+  let the_function = block_parent sw_bb in
+
+  let int_case_bb = append_block context "int_case" the_function in
+  let bool_case_bb = append_block context "bool_case" the_function in
+  let str_case_bb = append_block context "str_case" the_function in
+  let list_case_bb = append_block context "list_case" the_function in
+  let default_bb = append_block context "default_case" the_function in
+  let end_bb = append_block context "end_case" the_function in
+
+  (* Create the switch *)
+  let switch_inst = build_switch tag_val default_bb 4 builder in
+  ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+
+  (* int_case: load 64-bit int from data and print with "%lld" *)
+  position_at_end int_case_bb builder;
+  let data_ptr = build_struct_gep elem_ptr 1 "data_ptr_int" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64_int" builder in
+  let int_val = build_load data_ptr_i64 "int_val" builder in
+  let fmt_str_int = build_global_stringptr "%lld" "fmt_int" builder in
+  ignore (build_call printf_func [| fmt_str_int; int_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* bool_case: load bool, print "True" or "False" *)
+  position_at_end bool_case_bb builder;
+  let data_ptr_bool = build_struct_gep elem_ptr 1 "data_ptr_bool" builder in
+  let data_ptr_i64_bool = build_bitcast data_ptr_bool (pointer_type i64_t) "data_ptr_i64_bool" builder in
+  let bool_val64 = build_load data_ptr_i64_bool "bool_val64" builder in
+  let bool_cond = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_cond" builder in
+  let true_str = build_global_stringptr "True" "true_str" builder in
+  let false_str = build_global_stringptr "False" "false_str" builder in
+  let chosen_str = build_select bool_cond true_str false_str "chosen_str" builder in
+  let fmt_str_bool = build_global_stringptr "%s" "fmt_bool" builder in
+  ignore (build_call printf_func [| fmt_str_bool; chosen_str |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* str_case: load i8* string and print with "%s" *)
+  position_at_end str_case_bb builder;
+  let data_ptr_str = build_struct_gep elem_ptr 1 "data_ptr_str" builder in
+  let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
+  let str_val = build_load data_ptr_i8p "str_val" builder in
+  let fmt_str_str = build_global_stringptr "%s" "fmt_str" builder in
+  ignore (build_call printf_func [| fmt_str_str; str_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* list_case: load list pointer and call print_list recursively *)
+  position_at_end list_case_bb builder;
+  let data_ptr_list = build_struct_gep elem_ptr 1 "data_ptr_list" builder in
+  let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+  let list_val = build_load data_ptr_listp "list_val" builder in
+  ignore (build_call print_list_fn [| list_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* default_case: print "???" for unknown tag *)
+  position_at_end default_bb builder;
+  let unknown_str = build_global_stringptr "???" "unknown_str" builder in
+  let fmt_str_unk = build_global_stringptr "%s" "fmt_unk" builder in
+  ignore (build_call printf_func [| fmt_str_unk; unknown_str |] "" builder);
+  ignore (build_br end_bb builder);
+
+  position_at_end end_bb builder;
+  ()  
+
+(* Implementing the print_list function *)
+let () =
+  (* We only define the print_list function body if it isn't defined yet *)
+  if Array.length (basic_blocks print_list_fn) = 0 then begin
+      let bb = append_block context "entry" print_list_fn in
+      position_at_end bb builder;
+
+      let list_ptr = param print_list_fn 0 in
+      set_value_name "list" list_ptr;
+
+      (* Print "[" *)
+      let open_bracket = build_global_stringptr "[" "open_bracket" builder in
+      let fmt_str = build_global_stringptr "%s" "fmt" builder in
+      ignore (build_call printf_func [| fmt_str; open_bracket |] "" builder);
+
+      (* Extract length and elements *)
+      let length_ptr = build_struct_gep list_ptr 0 "length_ptr_list" builder in
+      let length_val = build_load length_ptr "length_val" builder in
+
+      let arr_ptr_ptr = build_struct_gep list_ptr 1 "arr_ptr_ptr" builder in
+      let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+
+      (* We'll use a loop to iterate over elements:
+         Pseudocode:
+           for i in 0 to length-1:
+             if i > 0: print ", "
+             print element i
+      *)
+
+      (* Create basic blocks *)
+      let the_function = block_parent (insertion_block builder) in
+      let loop_cond_bb = append_block context "loop_cond" the_function in
+      let loop_body_bb = append_block context "loop_body" the_function in
+      let loop_end_bb = append_block context "loop_end" the_function in
+
+      (* Initialize i = 0 *)
+      let i_ptr = build_alloca i64_t "i" builder in
+      ignore (build_store (const_int i64_t 0) i_ptr builder);
+      ignore (build_br loop_cond_bb builder);
+
+      (* loop_cond: check i < length_val *)
+      position_at_end loop_cond_bb builder;
+      let i_val = build_load i_ptr "i_val" builder in
+      let cond = build_icmp Icmp.Slt i_val length_val "loopcond" builder in
+      ignore (build_cond_br cond loop_body_bb loop_end_bb builder);
+
+      (* loop_body: print ", " if i > 0, then print element i *)
+      position_at_end loop_body_bb builder;
+
+      let is_not_first = build_icmp Icmp.Sgt i_val (const_int i64_t 0) "is_not_first" builder in
+      let comma_bb = append_block context "comma" the_function in
+      let no_comma_bb = append_block context "no_comma" the_function in
+      ignore (build_cond_br is_not_first comma_bb no_comma_bb builder);
+
+      position_at_end comma_bb builder;
+      let comma_str = build_global_stringptr ", " "comma_str" builder in
+      ignore (build_call printf_func [| fmt_str; comma_str |] "" builder);
+      ignore (build_br no_comma_bb builder);
+
+      position_at_end no_comma_bb builder;
+
+      (* Print element i *)
+      let elem_ptr = build_gep arr_ptr [| i_val |] "elem_ptr" builder in
+      let elem_val = build_load elem_ptr "elem_val" builder in
+      (* elem_val is box_t*, print it *)
+      print_boxed_element builder elem_val;
+
+      (* i++ *)
+      let i_next = build_add i_val (const_int i64_t 1) "i_next" builder in
+      ignore (build_store i_next i_ptr builder);
+
+      ignore (build_br loop_cond_bb builder);
+
+      (* loop_end: print "]\n" *)
+      position_at_end loop_end_bb builder;
+      let close_bracket = build_global_stringptr "]" "close_bracket" builder in
+      ignore (build_call printf_func [| fmt_str; close_bracket |] "" builder);
+      ignore (build_ret_void builder); 
+  end;
+
+      codegen_expr_ref := codegen_expr;
