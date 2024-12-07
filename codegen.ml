@@ -26,6 +26,7 @@ let str_t   = pointer_type i8_t
 *)
 let box_t = named_struct_type context "box_t"
 let _ = struct_set_body box_t [| i8_t; array_type i8_t 8 |] false
+let box_ptr_t = pointer_type box_t
 let list_t = named_struct_type context "list_t"
 let _ = struct_set_body list_t [| i64_t; pointer_type (pointer_type box_t) |] false
 
@@ -132,6 +133,79 @@ let codegen_const = function
 
 (* Forward declaration of codegen_expr *)
 let rec codegen_expr_ref = ref (fun _ -> const_null i64_t)
+
+(* Helper to print a single boxed element *)
+let print_boxed_element builder elem_ptr =
+  let tag_ptr = build_struct_gep elem_ptr 0 "tag_ptr_elem" builder in
+  let tag_val = build_load tag_ptr "tag_val" builder in
+
+  (* We'll switch on the tag_val to print different types *)
+  let i8_t = i8_type context in
+  let sw_bb = insertion_block builder in
+  let the_function = block_parent sw_bb in
+
+  let int_case_bb = append_block context "int_case" the_function in
+  let bool_case_bb = append_block context "bool_case" the_function in
+  let str_case_bb = append_block context "str_case" the_function in
+  let list_case_bb = append_block context "list_case" the_function in
+  let default_bb = append_block context "default_case" the_function in
+  let end_bb = append_block context "end_case" the_function in
+
+  (* Create the switch *)
+  let switch_inst = build_switch tag_val default_bb 4 builder in
+  ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+
+  (* int_case: load 64-bit int from data and print with "%lld" *)
+  position_at_end int_case_bb builder;
+  let data_ptr = build_struct_gep elem_ptr 1 "data_ptr_int" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64_int" builder in
+  let int_val = build_load data_ptr_i64 "int_val" builder in
+  let fmt_str_int = build_global_stringptr "%lld" "fmt_int" builder in
+  ignore (build_call printf_func [| fmt_str_int; int_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* bool_case: load bool, print "True" or "False" *)
+  position_at_end bool_case_bb builder;
+  let data_ptr_bool = build_struct_gep elem_ptr 1 "data_ptr_bool" builder in
+  let data_ptr_i64_bool = build_bitcast data_ptr_bool (pointer_type i64_t) "data_ptr_i64_bool" builder in
+  let bool_val64 = build_load data_ptr_i64_bool "bool_val64" builder in
+  let bool_cond = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_cond" builder in
+  let true_str = build_global_stringptr "True" "true_str" builder in
+  let false_str = build_global_stringptr "False" "false_str" builder in
+  let chosen_str = build_select bool_cond true_str false_str "chosen_str" builder in
+  let fmt_str_bool = build_global_stringptr "%s" "fmt_bool" builder in
+  ignore (build_call printf_func [| fmt_str_bool; chosen_str |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* str_case: load i8* string and print with "%s" *)
+  position_at_end str_case_bb builder;
+  let data_ptr_str = build_struct_gep elem_ptr 1 "data_ptr_str" builder in
+  let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
+  let str_val = build_load data_ptr_i8p "str_val" builder in
+  let fmt_str_str = build_global_stringptr "%s" "fmt_str" builder in
+  ignore (build_call printf_func [| fmt_str_str; str_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* list_case: load list pointer and call print_list recursively *)
+  position_at_end list_case_bb builder;
+  let data_ptr_list = build_struct_gep elem_ptr 1 "data_ptr_list" builder in
+  let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+  let list_val = build_load data_ptr_listp "list_val" builder in
+  ignore (build_call print_list_fn [| list_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* default_case: print "???" for unknown tag *)
+  position_at_end default_bb builder;
+  let unknown_str = build_global_stringptr "???" "unknown_str" builder in
+  let fmt_str_unk = build_global_stringptr "%s" "fmt_unk" builder in
+  ignore (build_call printf_func [| fmt_str_unk; unknown_str |] "" builder);
+  ignore (build_br end_bb builder);
+
+  position_at_end end_bb builder;
+  ()  
 
 (* Codegen a TElist *)
 let codegen_list (elements: texpr list) =
@@ -301,8 +375,21 @@ let rec codegen_expr = function
       codegen_list elems
   | TErange _           ->
       failwith "Range is not implemented yet"
-  | TEget _             ->
-      failwith "List indexing is not implemented yet"
+  | TEget (list_expr, index_expr)             ->
+      let list_val = codegen_expr list_expr in
+      let index_val = codegen_expr index_expr in
+      
+      (* list_val : pointer_type list_t *)
+      (* The list structure is defined as { i64 length, box_t** elements } *)
+      (* Extract the arr_ptr (box_t** ) from the list *)
+      let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
+      let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+
+      (* Use the index to get the element pointer *)
+      let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
+      let elem_val = build_load elem_ptr "elem_val" builder in
+      (* elem_val is of type box_t*, which represents the boxed element *)
+      elem_val
 
 (* Recursive code generation for statements *)
 let rec codegen_stmt = function
@@ -372,9 +459,14 @@ let rec codegen_stmt = function
     else if arg_type = pointer_type list_t then
       (* call print_list *)
       ignore (build_call print_list_fn [| arg |] "" builder)
+    else if arg_type = box_ptr_t then (
+        (* Print a single boxed element *)
+        print_boxed_element builder arg;
+        let newline_str = build_global_stringptr "\n" "newline" builder in
+        let fmt_str = build_global_stringptr "%s" "fmt" builder in
+        ignore (build_call printf_func [| fmt_str; newline_str |] "" builder)
+      )
     else
-      (* For lists or other types, we'd need a specialized print function.
-         For simplicity, fail here or implement a runtime print. *)
       failwith "Unsupported type in print"
   | TSblock stmts ->
       List.iter codegen_stmt stmts
@@ -461,79 +553,6 @@ let write_ir_to_file filename =
      codegen_file typed_tree;
      write_module_to_file "output.bc"
 *)
-
-(* Helper to print a single boxed element *)
-let print_boxed_element builder elem_ptr =
-  let tag_ptr = build_struct_gep elem_ptr 0 "tag_ptr_elem" builder in
-  let tag_val = build_load tag_ptr "tag_val" builder in
-
-  (* We'll switch on the tag_val to print different types *)
-  let i8_t = i8_type context in
-  let sw_bb = insertion_block builder in
-  let the_function = block_parent sw_bb in
-
-  let int_case_bb = append_block context "int_case" the_function in
-  let bool_case_bb = append_block context "bool_case" the_function in
-  let str_case_bb = append_block context "str_case" the_function in
-  let list_case_bb = append_block context "list_case" the_function in
-  let default_bb = append_block context "default_case" the_function in
-  let end_bb = append_block context "end_case" the_function in
-
-  (* Create the switch *)
-  let switch_inst = build_switch tag_val default_bb 4 builder in
-  ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
-  ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
-  ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
-  ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
-
-  (* int_case: load 64-bit int from data and print with "%lld" *)
-  position_at_end int_case_bb builder;
-  let data_ptr = build_struct_gep elem_ptr 1 "data_ptr_int" builder in
-  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64_int" builder in
-  let int_val = build_load data_ptr_i64 "int_val" builder in
-  let fmt_str_int = build_global_stringptr "%lld" "fmt_int" builder in
-  ignore (build_call printf_func [| fmt_str_int; int_val |] "" builder);
-  ignore (build_br end_bb builder);
-
-  (* bool_case: load bool, print "True" or "False" *)
-  position_at_end bool_case_bb builder;
-  let data_ptr_bool = build_struct_gep elem_ptr 1 "data_ptr_bool" builder in
-  let data_ptr_i64_bool = build_bitcast data_ptr_bool (pointer_type i64_t) "data_ptr_i64_bool" builder in
-  let bool_val64 = build_load data_ptr_i64_bool "bool_val64" builder in
-  let bool_cond = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_cond" builder in
-  let true_str = build_global_stringptr "True" "true_str" builder in
-  let false_str = build_global_stringptr "False" "false_str" builder in
-  let chosen_str = build_select bool_cond true_str false_str "chosen_str" builder in
-  let fmt_str_bool = build_global_stringptr "%s" "fmt_bool" builder in
-  ignore (build_call printf_func [| fmt_str_bool; chosen_str |] "" builder);
-  ignore (build_br end_bb builder);
-
-  (* str_case: load i8* string and print with "%s" *)
-  position_at_end str_case_bb builder;
-  let data_ptr_str = build_struct_gep elem_ptr 1 "data_ptr_str" builder in
-  let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
-  let str_val = build_load data_ptr_i8p "str_val" builder in
-  let fmt_str_str = build_global_stringptr "%s" "fmt_str" builder in
-  ignore (build_call printf_func [| fmt_str_str; str_val |] "" builder);
-  ignore (build_br end_bb builder);
-
-  (* list_case: load list pointer and call print_list recursively *)
-  position_at_end list_case_bb builder;
-  let data_ptr_list = build_struct_gep elem_ptr 1 "data_ptr_list" builder in
-  let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
-  let list_val = build_load data_ptr_listp "list_val" builder in
-  ignore (build_call print_list_fn [| list_val |] "" builder);
-  ignore (build_br end_bb builder);
-
-  (* default_case: print "???" for unknown tag *)
-  position_at_end default_bb builder;
-  let unknown_str = build_global_stringptr "???" "unknown_str" builder in
-  let fmt_str_unk = build_global_stringptr "%s" "fmt_unk" builder in
-  ignore (build_call printf_func [| fmt_str_unk; unknown_str |] "" builder);
-  ignore (build_br end_bb builder);
-
-  position_at_end end_bb builder;
-  ()  
 
 (* Implementing the print_list function *)
 let () =
