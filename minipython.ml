@@ -43,7 +43,7 @@ let () =
     close_in c;
     if debug then begin
       Printf.printf "Parsed AST:\n";
-      print_endline(PrintAst.print_file f)
+      print_endline(Print_ast.print_file f)
     end;
     if !parse_only then exit 0;
 
@@ -51,7 +51,7 @@ let () =
     let f = Typing.file ~debug f in
     if debug then begin
       let fmt = Format.std_formatter in
-      Format.fprintf fmt "Typed AST:\n%a@." PrintTypedAst.print_tfile f
+      Format.fprintf fmt "Typed AST:\n%a@." Print_typed_ast.print_tfile f
     end;
     if !type_only then exit 0;
 
