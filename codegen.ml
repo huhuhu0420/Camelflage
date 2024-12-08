@@ -375,21 +375,133 @@ let rec codegen_expr = function
       codegen_list elems
   | TErange _           ->
       failwith "Range is not implemented yet"
-  | TEget (list_expr, index_expr)             ->
-      let list_val = codegen_expr list_expr in
-      let index_val = codegen_expr index_expr in
-      
-      (* list_val : pointer_type list_t *)
-      (* The list structure is defined as { i64 length, box_t** elements } *)
-      (* Extract the arr_ptr (box_t** ) from the list *)
-      let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
-      let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+  | TEget (list_expr, index_expr) ->
+    let list_val_raw = codegen_expr list_expr in
 
-      (* Use the index to get the element pointer *)
-      let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
-      let elem_val = build_load elem_ptr "elem_val" builder in
-      (* elem_val is of type box_t*, which represents the boxed element *)
-      elem_val
+    (* Determine if list is raw list_t* or boxed *)
+    let list_expr_ty = type_of list_val_raw in
+    let list_val =
+      if list_expr_ty = pointer_type list_t then
+        (* Already a raw list_t* *)
+        list_val_raw
+      else (
+        (* Unbox list from box_t* *)
+        let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
+        let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+        let tag_val = build_load tag_ptr "tag_val" builder in
+
+        let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+        let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+        build_load data_ptr_listp "list_val" builder
+      )
+    in
+
+    let index_val = codegen_expr index_expr in
+
+    (* Get length and check index bounds *)
+    let length_ptr = build_struct_gep list_val 0 "length_ptr_list" builder in
+    let length_val = build_load length_ptr "length_val" builder in
+
+    let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
+    let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+
+    (* Check index is within bounds *)
+    let start_bb = insertion_block builder in
+    let the_function = block_parent start_bb in
+
+    let in_bounds_bb = append_block context "index_in_bounds" the_function in
+    let out_of_bounds_bb = append_block context "index_out_of_bounds" the_function in
+    let result_bb = append_block context "get_result" the_function in
+
+    let cond = build_icmp Icmp.Ult index_val length_val "index_check" builder in
+    ignore (build_cond_br cond in_bounds_bb out_of_bounds_bb builder);
+
+    (* Out of bounds: print error and exit *)
+    position_at_end out_of_bounds_bb builder;
+    let err_str = build_global_stringptr "Index out of bounds\n" "err_str" builder in
+    let fmt_str = build_global_stringptr "%s" "fmt" builder in
+    ignore (build_call printf_func [| fmt_str; err_str |] "" builder);
+    ignore (build_ret (const_int i32_t 1) builder);
+
+    (* In bounds: get the element *)
+    position_at_end in_bounds_bb builder;
+    let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
+    let elem_val = build_load elem_ptr "elem_val" builder in
+
+    (* Depending on the type, unbox or return *)
+    let result_ptr = build_alloca (type_of elem_val) "result" builder in
+    ignore (build_store elem_val result_ptr builder);
+
+    (* Unbox if it's a box_t *)
+    let result = 
+      if type_of elem_val = pointer_type box_t then (
+        let box_ptr = build_bitcast elem_val (pointer_type box_t) "box_ptr" builder in
+        let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+        let tag_val = build_load tag_ptr "tag_val" builder in
+
+        (* Switch based on tag to unbox *)
+        let i8_t = i8_type context in
+        let sw_bb = insertion_block builder in
+        let int_case_bb = append_block context "int_unbox" the_function in
+        let bool_case_bb = append_block context "bool_unbox" the_function in
+        let str_case_bb = append_block context "str_unbox" the_function in
+        let list_case_bb = append_block context "list_unbox" the_function in
+        let default_bb = append_block context "default_unbox" the_function in
+        let end_bb = append_block context "unbox_end" the_function in
+
+        let switch_inst = build_switch tag_val default_bb 4 builder in
+        ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
+        ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
+        ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
+        ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+
+        (* Int case: load 64-bit int *)
+        position_at_end int_case_bb builder;
+        let data_ptr = build_struct_gep box_ptr 1 "data_ptr_int" builder in
+        let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+        let int_val = build_load data_ptr_i64 "int_val" builder in
+        ignore (build_br end_bb builder);
+
+        (* Bool case: determine bool value *)
+        position_at_end bool_case_bb builder;
+        let data_ptr_bool = build_struct_gep box_ptr 1 "data_ptr_bool" builder in
+        let data_ptr_i64_bool = build_bitcast data_ptr_bool (pointer_type i64_t) "data_ptr_i64_bool" builder in
+        let bool_val64 = build_load data_ptr_i64_bool "bool_val64" builder in
+        let bool_val = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_val" builder in
+        ignore (build_br end_bb builder);
+
+        (* String case: load string pointer *)
+        position_at_end str_case_bb builder;
+        let data_ptr_str = build_struct_gep box_ptr 1 "data_ptr_str" builder in
+        let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
+        let str_val = build_load data_ptr_i8p "str_val" builder in
+        ignore (build_br end_bb builder);
+
+        (* List case: load list pointer *)
+        position_at_end list_case_bb builder;
+        let data_ptr_list = build_struct_gep box_ptr 1 "data_ptr_list" builder in
+        let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+        let list_val = build_load data_ptr_listp "list_val" builder in
+        ignore (build_br end_bb builder);
+
+        (* Default case *)
+        position_at_end default_bb builder;
+        ignore (build_br end_bb builder);
+
+        (* End: store result and return *)
+        position_at_end end_bb builder;
+        match tag_val with
+        | _ when tag_val = const_int i8_t 0 -> int_val
+        | _ when tag_val = const_int i8_t 1 -> bool_val
+        | _ when tag_val = const_int i8_t 2 -> str_val
+        | _ when tag_val = const_int i8_t 3 -> list_val
+        | _ -> const_int i64_t 0
+      ) else elem_val
+    in
+
+    ignore (build_br result_bb builder);
+    position_at_end result_bb builder;
+    result
 
 (* Recursive code generation for statements *)
 let rec codegen_stmt = function
@@ -474,8 +586,76 @@ let rec codegen_stmt = function
       failwith "For loops are not implemented yet"
   | TSeval e ->
       ignore (codegen_expr e)
-  | TSset _ ->
-      failwith "List assignment is not implemented yet"
+  | TSset (list_expr, index_expr, value_expr) ->
+    let list_val_raw = codegen_expr list_expr in
+
+    (* list_val_raw might be a list_t* directly (if defined that way),
+       or it might be a box_t* containing a list_t*. 
+       We should handle both cases.
+
+       Check if type_of(list_val_raw) is pointer_type list_t directly, 
+       or if it's box_t* and we need to unbox.
+    *)
+    let list_expr_ty = type_of list_val_raw in
+    let list_val =
+      if list_expr_ty = pointer_type list_t then
+        (* Already a raw list_t* *)
+        list_val_raw
+      else (
+        (* Otherwise, assume it's a box_t* with a list inside. 
+           Unbox to get the list_t*.
+        *)
+        let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
+        let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+        let tag_val = build_load tag_ptr "tag_val" builder in
+
+        (* Optionally check that tag_val = 3 for list *)
+        (* let cond = build_icmp Icmp.Eq tag_val (const_int i8_t 3) "check_list_tag" builder in *)
+        (* Could branch or fail if not a list *)
+
+        let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+        let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+        build_load data_ptr_listp "list_val" builder
+      )
+    in
+
+    let index_val = codegen_expr index_expr in
+    let val_ll = codegen_expr value_expr in
+
+    (* Box val_ll as in the previous TSset implementation *)
+    let val_type = type_of val_ll in
+    let boxed_val =
+      if val_type = i64_t then
+        (* Box as int *)
+        let i64_ptr = build_call malloc_fn [| const_int i64_t 9 |] "int_box" builder in
+        let box_ptr = build_bitcast i64_ptr (pointer_type box_t) "box_ptr" builder in
+        let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+        ignore (build_store (const_int i8_t 0) tag_ptr builder);
+        let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+        let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+        ignore (build_store val_ll data_ptr_i64 builder);
+        i64_ptr
+      else if val_type = i1_t then
+        (* Box as bool *)
+        let bool_val = match int64_of_const (build_zext val_ll i64_t "bool_zext" builder) with
+          | Some x -> x
+          | None -> 0L
+        in
+        box_bool (bool_val = 1L)
+      else if val_type = str_t then
+        box_string val_ll
+      else if val_type = pointer_type list_t then
+        box_list val_ll
+      else
+        failwith "Unsupported type in TSset value"
+    in
+
+    (* Now store the boxed_val into the list at the given index *)
+    let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
+    let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+    let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
+    let boxed_ptr = build_bitcast boxed_val (pointer_type box_t) "boxed_ptr" builder in
+    ignore (build_store boxed_ptr elem_ptr builder)
 
 (* Code generation for function definitions *)
 let codegen_def (fn, body) =
