@@ -9,6 +9,7 @@ compilo=$2
 score=0
 max=0
 verbose=0
+llc=llc-14
 
 
 echo "Testing $2"
@@ -149,13 +150,14 @@ echo "-------------------------------"
 for f in exec/*.py; do
     echo -n "."
     asm=exec/`basename $f .py`.s
+    ll=exec/`basename $f .py`.ll
     rm -f $asm
     expected=exec/`basename $f .py`.out
     max=`expr $max + 1`;
     if compile $f; then
 	rm -f out
 	score_comp=`expr $score_comp + 1`;
-	if gcc -no-pie $asm && ./a.out > out; then
+	if $llc $ll -o $asm && gcc -no-pie $asm && ./a.out > out; then
 	    score_out=`expr $score_out + 1`;
 	    if cmp --quiet out $expected; then
 		score_test=`expr $score_test + 1`;
@@ -180,9 +182,10 @@ echo "------------------------------"
 for f in exec-fail/*.py; do
     echo -n "."
     asm=exec-fail/`basename $f .py`.s
+    ll=exec-fail/`basename $f .py`.ll
     rm -f $asm
     max=`expr $max + 1`;
-    if compile $f && gcc -no-pie $asm; then
+    if compile $f && $llc $ll -o $asm && gcc -no-pie $asm; then
 	score_comp=`expr $score_comp + 1`;
 	if { ./a.out > out; } >& /dev/null; then
 	    echo

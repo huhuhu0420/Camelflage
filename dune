@@ -6,22 +6,17 @@
 
 (executable
  (name minipython)
- (modules 
+ (modules
   minipython
   lexer
   parser
   ast
   Codegen
   typing
-  PrintTypedAst
-  printAst
+  Print_typed_ast
+  Print_ast
   compile
-  x86_64
- )
- (libraries 
-  llvm
-  llvm.bitwriter
-  llvm.analysis
- )
+  x86_64)
+ (libraries llvm llvm.bitwriter llvm.analysis)
  (promote (until-clean))
  (flags ()))

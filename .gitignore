@@ -40,3 +40,9 @@ _opam/
 # output
 *.out
 out
+
+# test
+tests-mini-python/exec/*.s
+tests-mini-python/exec/*.ll
+tests-mini-python/exec-fail/*.s
+tests-mini-python/exec-fail/*.ll
