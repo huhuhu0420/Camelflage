@@ -61,6 +61,19 @@ let printf_func =
   | Some f -> f
   | None -> declare_function "printf" printf_t the_module
 
+(* strlen *)
+let strlen_t = function_type i64_t [| str_t |]
+let strlen_fn =
+  match lookup_function "strlen" the_module with
+  | Some f -> f
+  | None -> declare_function "strlen" strlen_t the_module
+
+let exit_t = function_type void_t [| i32_t |]
+let exit_fn =
+  match lookup_function "exit" the_module with
+  | Some f -> f
+  | None -> declare_function "exit" exit_t the_module
+
 (* print_list *)
 let print_list_t = function_type void_t [| pointer_type list_t |]
 let print_list_fn =
@@ -367,6 +380,51 @@ let rec codegen_expr = function
        | Uneg -> build_neg v "negtmp" builder
        | Unot -> build_not v "nottmp" builder)
   | TEcall (fn, args) ->
+    if fn.fn_name = "range" then
+      begin
+        (* range(e) *)
+        if List.length args <> 1 then failwith "range expects exactly one argument";
+        let arg_val = codegen_expr (List.hd args) in
+        (* arg_val is an i64 integer: generate a list [0, 1, ..., arg_val-1] *)
+        
+        (* Convert the argument to an integer constant if possible *)
+        let range_size_opt = int64_of_const arg_val in
+        let range_size = match range_size_opt with
+          | Some x -> Int64.to_int x
+          | None -> failwith "range expects a constant integer argument" in
+
+        (* Construct the TElist node with integers 0..range_size-1 *)
+        let rec aux i =
+          if i = range_size then []
+          else TEcst (Cint (Int64.of_int i)) :: aux (i + 1)
+        in
+        let elements = aux 0 in
+        codegen_list elements (* directly call codegen_list as we have a helper for TElist *)
+      end
+    else if fn.fn_name = "list" then
+      begin
+        (* list(range(e)) *)
+        if List.length args <> 1 then failwith "list expects exactly one argument";
+        let arg = List.hd args in
+
+        (* Evaluate the argument. We assume it's the result of range(e). *)
+        let arg_val = codegen_expr arg in
+        
+        (* If `arg_val` is already a list_t pointer (from range), just return it.
+           If it's a boxed list, unbox it. *)
+        let t = type_of arg_val in
+        if t = pointer_type list_t then
+          (* Already a list pointer, just return it *)
+          arg_val
+        else
+          (* If it's a boxed list, unbox it. *)
+          let box_ptr = build_bitcast arg_val (pointer_type box_t) "list_box_ptr" builder in
+          let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+          let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+          build_load data_ptr_listp "list_val" builder
+      end
+    else
+      (* Original code for TEcall remains the same for other functions *)
       let callee =
         match lookup_function fn.fn_name the_module with
         | Some f -> f
