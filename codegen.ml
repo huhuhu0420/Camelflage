@@ -439,130 +439,66 @@ let rec codegen_expr = function
   | TElist elems -> codegen_list elems
   | TErange _ -> failwith "Range is not implemented yet"
   | TEget (list_expr, index_expr) ->
-      (* Extract and unbox list *)
-      let list_val_raw = codegen_expr list_expr in
-      let list_val =
-        let t = type_of list_val_raw in
-        if t = pointer_type list_t then list_val_raw else
-          (* Unbox list_t* from box_t* *)
-          let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
-          let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
-          let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
-          build_load data_ptr_listp "list_val" builder
-      in
+    (* Generate code for the list expression *)
+    let list_val_raw = codegen_expr list_expr in
 
-      let index_val = codegen_expr index_expr in
-      (* Bounds check *)
-      let length_ptr = build_struct_gep list_val 0 "length_ptr_list" builder in
-      let length_val = build_load length_ptr "length_val" builder in
+    (* Unbox the list if it's boxed *)
+    let list_val =
+      if type_of list_val_raw = pointer_type list_t then
+        list_val_raw
+      else
+        (* Assume it's a box_t* containing a list_t* *)
+        let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
+        let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+        let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+        build_load data_ptr_listp "list_val" builder
+    in
 
-      let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
-      let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+    (* Generate code for the index expression *)
+    let index_val = codegen_expr index_expr in
 
-      let start_bb = insertion_block builder in
-      let the_function = block_parent start_bb in
+    (* Extract length and array pointer from the list *)
+    let length_ptr = build_struct_gep list_val 0 "length_ptr_list" builder in
+    let length_val = build_load length_ptr "length_val" builder in
 
-      let in_bounds_bb = append_block context "index_in_bounds" the_function in
-      let out_of_bounds_bb = append_block context "index_out_of_bounds" the_function in
-      let result_bb = append_block context "get_result" the_function in
+    let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
+    let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
 
-      let cond = build_icmp Icmp.Ult index_val length_val "index_check" builder in
-      ignore (build_cond_br cond in_bounds_bb out_of_bounds_bb builder);
+    (* Create basic blocks for bounds checking and error handling *)
+    let the_function = block_parent (insertion_block builder) in
+    let in_bounds_bb = append_block context "index_in_bounds" the_function in
+    let out_of_bounds_bb = append_block context "index_out_of_bounds" the_function in
+    let merge_bb = append_block context "get_merge" the_function in
 
-      (* Out of bounds *)
-      position_at_end out_of_bounds_bb builder;
-      let err_str = build_global_stringptr "Index out of bounds\n" "err_str" builder in
-      let fmt_str = build_global_stringptr "%s" "fmt" builder in
-      ignore (build_call printf_func [| fmt_str; err_str |] "" builder);
-      ignore (build_ret (const_int i32_t 1) builder);
+    (* Compare index < length *)
+    let cond = build_icmp Icmp.Ult index_val length_val "index_check" builder in
+    ignore (build_cond_br cond in_bounds_bb out_of_bounds_bb builder);
 
-      (* In bounds *)
-      position_at_end in_bounds_bb builder;
-      let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
-      let elem_val = build_load elem_ptr "elem_val" builder in
+    (* In bounds: load the element and branch to merge *)
+    position_at_end in_bounds_bb builder;
+    let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" builder in
+    let elem_val = build_load elem_ptr "elem_val" builder in
+    ignore (build_br merge_bb builder);
 
-      (* Attempt to unbox if needed *)
-      let unbox_element elem_val =
-        let t = type_of elem_val in
-        if t = pointer_type box_t then
-          (* Unbox from box_t *)
-          let box_ptr = build_bitcast elem_val (pointer_type box_t) "box_ptr" builder in
-          let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
-          let tag_val = build_load tag_ptr "tag_val" builder in
+    (* Out of bounds: print error and exit *)
+    position_at_end out_of_bounds_bb builder;
+    let err_str = build_global_stringptr "Index out of bounds\n" "err_str" builder in
+    let fmt_str = build_global_stringptr "%s" "fmt_str" builder in
+    ignore (build_call printf_func [| fmt_str; err_str |] "" builder);
+    ignore (build_call exit_fn [| const_int i32_t 1 |] "" builder);
+    ignore (build_unreachable builder);
 
-          let the_function = block_parent (insertion_block builder) in
-          let int_case_bb    = append_block context "int_unbox" the_function in
-          let bool_case_bb   = append_block context "bool_unbox" the_function in
-          let str_case_bb    = append_block context "str_unbox" the_function in
-          let list_case_bb   = append_block context "list_unbox" the_function in
-          let default_bb      = append_block context "default_unbox" the_function in
-          let end_bb          = append_block context "unbox_end" the_function in
+    (* Merge block: phi node to obtain elem_val from in_bounds_bb *)
+    position_at_end merge_bb builder;
+    let phi = build_phi [ (elem_val, in_bounds_bb) ] "get_elem_phi" builder in
 
-          let switch_inst = build_switch tag_val default_bb 4 builder in
-          ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
-          ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
-          ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
-          ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+    (* Create a new basic block to continue after TEget *)
+    let continue_bb = append_block context "get_continue" the_function in
+    ignore (build_br continue_bb builder);
 
-          (* Int *)
-          position_at_end int_case_bb builder;
-          let data_ptr_int = build_struct_gep box_ptr 1 "data_ptr_int" builder in
-          let data_ptr_i64_int = build_bitcast data_ptr_int (pointer_type i64_t) "data_ptr_i64" builder in
-          let int_val = build_load data_ptr_i64_int "int_val" builder in
-          ignore (build_br end_bb builder);
-
-          (* Bool *)
-          position_at_end bool_case_bb builder;
-          let data_ptr_bool = build_struct_gep box_ptr 1 "data_ptr_bool" builder in
-          let data_ptr_i64_bool = build_bitcast data_ptr_bool (pointer_type i64_t) "data_ptr_i64_bool" builder in
-          let bool_val64 = build_load data_ptr_i64_bool "bool_val64" builder in
-          let bool_val = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_val" builder in
-          ignore (build_br end_bb builder);
-
-          (* String *)
-          position_at_end str_case_bb builder;
-          let data_ptr_str = build_struct_gep box_ptr 1 "data_ptr_str" builder in
-          let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
-          let str_val = build_load data_ptr_i8p "str_val" builder in
-          ignore (build_br end_bb builder);
-
-          (* List *)
-          position_at_end list_case_bb builder;
-          let data_ptr_list = build_struct_gep box_ptr 1 "data_ptr_list" builder in
-          let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
-          let list_val = build_load data_ptr_listp "list_val" builder in
-          ignore (build_br end_bb builder);
-
-          (* Default *)
-          position_at_end default_bb builder;
-          ignore (build_br end_bb builder);
-
-          (* End: build a phi or select based on tag_val *)
-          position_at_end end_bb builder;
-
-          (* Use a series of conditional assignments. Since we can't easily
-             do a phi node for different types, we rely on the original logic,
-             which simply returns the last computed value.
-             This code, as originally written, picks a single returned value
-             based on the tag. Since the original code doesn't fully handle
-             mixing types, we replicate the original trick:
-          *)
-          match tag_val with
-          | _ when tag_val = const_int i8_t 0 -> int_val
-          | _ when tag_val = const_int i8_t 1 -> bool_val
-          | _ when tag_val = const_int i8_t 2 -> str_val
-          | _ when tag_val = const_int i8_t 3 -> list_val
-          | _ -> const_int i64_t 0
-        else
-          (* Not a box, just return it directly *)
-          elem_val
-      in
-
-      let result = unbox_element elem_val in
-      ignore (build_br result_bb builder);
-
-      position_at_end result_bb builder;
-      result
+    (* Assign the phi node's value as the expression's result in continue_bb *)
+    position_at_end continue_bb builder;
+    phi
 
 (*============================================*)
 (* Codegen for Statements                     *)
