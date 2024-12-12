@@ -68,6 +68,15 @@ let strlen_fn =
   | Some f -> f
   | None -> declare_function "strlen" strlen_t the_module
 
+(* memcpy *)
+let memcpy_t = var_arg_function_type (pointer_type i8_t) [| pointer_type i8_t; pointer_type i8_t; i64_t |]
+let memcpy_fn =
+  match lookup_function "memcpy" the_module with
+  | Some f -> f
+  | None -> declare_function "memcpy" memcpy_t the_module
+
+
+(* exit *)  
 let exit_t = function_type void_t [| i32_t |]
 let exit_fn =
   match lookup_function "exit" the_module with
@@ -363,7 +372,22 @@ let rec codegen_expr = function
           (* Final block with phi node *)
           position_at_end final_bb builder;
           build_load result_ptr "or_final_result" builder
-       | Badd -> build_add (codegen_expr lhs) (codegen_expr rhs) "addtmp" builder
+       | Badd -> 
+          let lhs_val = codegen_expr lhs in
+          let rhs_val = codegen_expr rhs in
+          (match lhs_val, rhs_val with
+          | l, r when type_of l = i64_t && type_of r = i64_t -> build_add l r "addtmp" builder
+          | l, r when type_of l = str_t && type_of r = str_t ->
+            let _ = build_global_stringptr "%s%s" "fmt" builder in
+            let str_val = build_call malloc_fn [| const_int i64_t 100 |] "str_val" builder in
+            let str_val_ptr = build_bitcast str_val str_t "str_val_ptr" builder in
+            let l_len = build_call strlen_fn [| l |] "l_len" builder in
+            let r_len = build_call strlen_fn [| r |] "r_len" builder in
+            let _ = build_add l_len r_len "total_len" builder in
+            ignore (build_call memcpy_fn [| str_val_ptr; l; l_len |] "" builder);
+            ignore (build_call memcpy_fn [| build_gep str_val_ptr [| l_len |] "r_start" builder; r; r_len |] "" builder);
+            str_val_ptr
+          | _ -> build_add lhs_val rhs_val "addtmp" builder);
        | Bsub -> build_sub (codegen_expr lhs) (codegen_expr rhs) "subtmp" builder
        | Bmul -> build_mul (codegen_expr lhs) (codegen_expr rhs) "multmp" builder
        | Bdiv -> build_sdiv (codegen_expr lhs) (codegen_expr rhs) "divtmp" builder
