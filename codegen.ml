@@ -94,6 +94,16 @@ let print_list_fn =
 (* Boxing/Unboxing Helpers                    *)
 (*============================================*)
 
+(* Helper to get the tag of a box *)
+let get_box_tag box_ptr builder =
+  let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+  build_load tag_ptr "tag_val" builder
+
+(* Helper to get the data pointer of a box *)
+let get_box_data box_ptr builder =
+  let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+  data_ptr
+
 (* Allocate a box_t (9 bytes: 1 for tag, 8 for data) *)
 let alloc_box () =
   let size = const_int i64_t 9 in
@@ -110,13 +120,20 @@ let store_i64_in_box box_ptr i64_val =
   let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
   ignore (build_store (const_int i64_t i64_val) data_ptr_i64 builder)
 
+let box_none () =
+  let box_ptr_i8 = alloc_box () in
+  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+  store_tag box_ptr 4;  (* none tag *)
+  store_i64_in_box box_ptr 0;  (* dummy value *)
+  box_ptr
+
 (* Box an integer *)
 let box_int i =
   let box_ptr_i8 = alloc_box () in
   let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
   store_tag box_ptr 0;
   store_i64_in_box box_ptr i;
-  box_ptr_i8
+  box_ptr
 
 (* Box a boolean *)
 let box_bool b =
@@ -124,7 +141,7 @@ let box_bool b =
   let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
   store_tag box_ptr 1;
   store_i64_in_box box_ptr (if b then 1 else 0);
-  box_ptr_i8
+  box_ptr
 
 (* Box a string (store the string pointer) *)
 let box_string str_val =
@@ -135,7 +152,7 @@ let box_string str_val =
   let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
   let data_ptr_i8p = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) "data_ptr_i8p" builder in
   ignore (build_store str_val data_ptr_i8p builder);
-  box_ptr_i8
+  box_ptr
 
 (* Box a list pointer *)
 let box_list list_ptr_val =
@@ -146,17 +163,38 @@ let box_list list_ptr_val =
   let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
   let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
   ignore (build_store list_ptr_val data_ptr_listp builder);
-  box_ptr_i8
+  box_ptr
+
+let unbox_int box_ptr builder =
+  let data_ptr = get_box_data box_ptr builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  build_load data_ptr_i64 "int_val" builder
+
+let unbox_bool box_ptr builder =
+  let data_ptr = get_box_data box_ptr builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  let bool_val = build_load data_ptr_i64 "bool_val" builder in
+  build_trunc bool_val i1_t "bool_trunc" builder
+
+let unbox_string box_ptr builder =
+  let data_ptr = get_box_data box_ptr builder in
+  let data_ptr_str = build_bitcast data_ptr (pointer_type str_t) "data_ptr_str" builder in
+  build_load data_ptr_str "str_val" builder
+
+let unbox_list box_ptr builder =
+  let data_ptr = get_box_data box_ptr builder in
+  let data_ptr_list = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_list" builder in
+  build_load data_ptr_list "list_val" builder
 
 (*============================================*)
 (* Constant Codegen                           *)
 (*============================================*)
 
 let codegen_const = function
-  | Cnone      -> const_null i64_t
-  | Cbool b    -> const_int i1_t (if b then 1 else 0)
-  | Cint i     -> const_int i64_t (Int64.to_int i)
-  | Cstring s  -> build_global_stringptr s "strtmp" builder
+  | Cnone      -> box_none ()
+  | Cbool b    -> box_bool b
+  | Cint i     -> box_int (Int64.to_int i)
+  | Cstring s  -> box_string (build_global_stringptr s "str_const" builder)
 
 (* Forward reference to codegen_expr, needed in codegen_list *)
 let codegen_expr_ref = ref (fun _ -> const_null i64_t)
@@ -241,34 +279,20 @@ let print_boxed_element builder elem_ptr =
 
 (* Helper to box a value given its llvalue and texpr *)
 let box_value_for_list val_ll el =
-  let t = type_of val_ll in
-  if t = i64_t then
-    (match el with
-     | TEcst (Cint i_val)  -> box_int (Int64.to_int i_val)
-     | TEcst (Cbool b_val) -> box_bool b_val
-     | _ ->
-       (* Treat as int *)
-       let i64_ptr = alloc_box () in
-       let box_ptr = build_bitcast i64_ptr (pointer_type box_t) "box_ptr" builder in
-       store_tag box_ptr 0;
-       let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
-       let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
-       ignore (build_store val_ll data_ptr_i64 builder);
-       i64_ptr
-    )
-  else if t = i1_t then
-    let bool_val = match int64_of_const (build_zext val_ll i64_t "bool_zext" builder) with
-      | Some x -> x
-      | None -> 0L
-    in
-    box_bool (bool_val = 1L)
-  else if t = str_t then
-    box_string val_ll
-  else if classify_type t = TypeKind.Pointer then
-    (* Nested list *)
-    box_list val_ll
-  else
-    failwith "Unsupported type in TElist"
+  match el with
+  | TEcst (Cint i)   -> box_int (Int64.to_int i)
+  | TEcst (Cbool b)  -> box_bool b
+  | TEcst (Cstring s) -> box_string (build_global_stringptr s "str_const" builder)
+  | TEcst Cnone      -> box_none ()
+  | TElist _         -> box_list val_ll
+  | _                -> 
+    (* For other expressions, examine the LLVM type *)
+    let t = type_of val_ll in
+    if t = i64_t then box_int (match int64_of_const val_ll with Some x -> Int64.to_int x | None -> 0)
+    else if t = i1_t then box_bool (match int64_of_const val_ll with Some x -> x = 1L | None -> false)
+    else if t = str_t then box_string val_ll
+    else if t = pointer_type list_t then box_list val_ll
+    else box_none ()
 
 let codegen_list (elements: texpr list) =
   let length = List.length elements in
@@ -301,6 +325,65 @@ let codegen_list (elements: texpr list) =
   ) elements;
 
   list_ptr
+
+  let print_boxed_element builder elem_ptr =
+  let tag_ptr = build_struct_gep elem_ptr 0 "tag_ptr" builder in
+  let tag_val = build_load tag_ptr "tag_val" builder in
+  
+  let sw_bb = insertion_block builder in
+  let the_function = block_parent sw_bb in
+  
+  (* Create basic blocks for each type case *)
+  let int_case_bb = append_block context "int_case" the_function in
+  let bool_case_bb = append_block context "bool_case" the_function in
+  let str_case_bb = append_block context "str_case" the_function in
+  let list_case_bb = append_block context "list_case" the_function in
+  let none_case_bb = append_block context "none_case" the_function in
+  let end_bb = append_block context "end_case" the_function in
+  
+  (* Create switch instruction *)
+  let switch_inst = build_switch tag_val none_case_bb 5 builder in
+  ignore (add_case switch_inst (const_int i8_t 0) int_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 4) none_case_bb);
+  
+  (* Handle each case *)
+  position_at_end int_case_bb builder;
+  let int_val = unbox_int elem_ptr builder in
+  let fmt_str_int = build_global_stringptr "%lld" "fmt_int" builder in
+  ignore (build_call printf_func [| fmt_str_int; int_val |] "" builder);
+  ignore (build_br end_bb builder);
+  
+  position_at_end bool_case_bb builder;
+  let bool_val = unbox_bool elem_ptr builder in
+  let fmt_str_bool = build_global_stringptr "%s" "fmt_bool" builder in
+  let true_str = build_global_stringptr "True" "true_str" builder in
+  let false_str = build_global_stringptr "False" "false_str" builder in
+  let chosen_str = build_select bool_val true_str false_str "chosen_str" builder in
+  ignore (build_call printf_func [| fmt_str_bool; chosen_str |] "" builder);
+  ignore (build_br end_bb builder);
+  
+  position_at_end str_case_bb builder;
+  let str_val = unbox_string elem_ptr builder in
+  let fmt_str_str = build_global_stringptr "%s" "fmt_str" builder in
+  ignore (build_call printf_func [| fmt_str_str; str_val |] "" builder);
+  ignore (build_br end_bb builder);
+  
+  position_at_end list_case_bb builder;
+  let list_val = unbox_list elem_ptr builder in
+  ignore (build_call print_list_fn [| list_val |] "" builder);
+  ignore (build_br end_bb builder);
+  
+  position_at_end none_case_bb builder;
+  let none_str = build_global_stringptr "None" "none_str" builder in
+  let fmt_str_none = build_global_stringptr "%s" "fmt_none" builder in
+  ignore (build_call printf_func [| fmt_str_none; none_str |] "" builder);
+  ignore (build_br end_bb builder);
+  
+  position_at_end end_bb builder;
+  ()
 
 (*============================================*)
 (* Codegen for Expressions                    *)
@@ -577,35 +660,19 @@ let rec codegen_stmt = function
       ignore (build_store val_e var_ptr builder)
 
   | TSprint e ->
-    let arg = codegen_expr e in
-    let arg_type = type_of arg in
-    let print_bool arg =
-      let fmt_str = build_global_stringptr "%s" "fmt" builder in
-      let true_str = build_global_stringptr "True" "true" builder in
-      let false_str = build_global_stringptr "False" "false" builder in
-      let cond = build_icmp Icmp.Eq arg (const_int i1_t 1) "cond" builder in
-      let str = build_select cond true_str false_str "str" builder in
-      ignore (build_call printf_func [| fmt_str; str |] "" builder)
-    in
-    (match arg_type with
-     | t when t = i64_t ->
-       let fmt_str = build_global_stringptr "%lld" "fmt" builder in
-       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
-     | t when t = i1_t -> print_bool arg
-     | t when t = str_t ->
-       let fmt_str = build_global_stringptr "%s" "fmt" builder in
-       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
-     | t when t = pointer_type list_t ->
-       ignore (build_call print_list_fn [| arg |] "" builder)
-     | t when t = box_ptr_t ->
-       print_boxed_element builder arg;
-     | _ -> failwith "Unsupported type in print");
-
-    (* Print a newline *)
+    let val_ll = codegen_expr e in
+      let val_type = type_of val_ll in
+      if val_type = pointer_type box_t then
+        print_boxed_element builder val_ll
+      else if val_type = pointer_type list_t then
+        ignore (build_call print_list_fn [| val_ll |] "" builder)
+      else
+        failwith "Unsupported type in print statement";
+      
+      (* Print newline *)
       let newline_str = build_global_stringptr "\n" "newline" builder in
       let fmt_str = build_global_stringptr "%s" "fmt" builder in
       ignore (build_call printf_func [| fmt_str; newline_str |] "" builder)
-
   | TSblock stmts -> List.iter codegen_stmt stmts
   | TSfor _ -> failwith "For loops are not implemented yet"
   | TSeval e -> ignore (codegen_expr e)
