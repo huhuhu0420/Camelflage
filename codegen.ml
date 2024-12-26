@@ -1,4 +1,4 @@
-(* codegen.ml *)
+  (* codegen.ml *)
  
 open Ast
 open Llvm
@@ -75,7 +75,6 @@ let memcpy_fn =
   | Some f -> f
   | None -> declare_function "memcpy" memcpy_t the_module
 
-
 (* exit *)  
 let exit_t = function_type void_t [| i32_t |]
 let exit_fn =
@@ -108,14 +107,14 @@ let store_tag box_ptr tag_val =
 let store_i64_in_box box_ptr i64_val =
   let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
   let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
-  ignore (build_store (const_int i64_t i64_val) data_ptr_i64 builder)
+  ignore (build_store i64_val data_ptr_i64 builder)
 
 (* Box an integer *)
 let box_int i =
   let box_ptr_i8 = alloc_box () in
   let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
   store_tag box_ptr 0;
-  store_i64_in_box box_ptr i;
+  store_i64_in_box box_ptr (const_int i64_t i);
   box_ptr_i8
 
 (* Box a boolean *)
@@ -123,7 +122,7 @@ let box_bool b =
   let box_ptr_i8 = alloc_box () in
   let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
   store_tag box_ptr 1;
-  store_i64_in_box box_ptr (if b then 1 else 0);
+  store_i64_in_box box_ptr (const_int i64_t (if b then 1 else 0));
   box_ptr_i8
 
 (* Box a string (store the string pointer) *)
@@ -607,53 +606,100 @@ let rec codegen_stmt = function
       ignore (build_call printf_func [| fmt_str; newline_str |] "" builder)
 
   | TSblock stmts -> List.iter codegen_stmt stmts
-  | TSfor _ -> failwith "For loops are not implemented yet"
-  | TSeval e -> ignore (codegen_expr e)
-  | TSset (list_expr, index_expr, value_expr) ->
+  | TSfor (var, list_expr, body) ->
       let list_val_raw = codegen_expr list_expr in
       let list_val =
-        let t = type_of list_val_raw in
-        if t = pointer_type list_t then
+        if type_of list_val_raw = pointer_type list_t then
           list_val_raw
-        else (
-          (* Unbox the list_t* from a box_t* *)
+        else
           let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
           let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
           let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
           build_load data_ptr_listp "list_val" builder
-        )
+      in
+
+      let the_function = block_parent (insertion_block builder) in
+      
+      (* Create blocks for the loop *)
+      let preheader_bb = insertion_block builder in
+      let loop_bb = append_block context "loop" the_function in
+      let after_bb = append_block context "afterloop" the_function in
+
+      (* Get list length and array pointer *)
+      let length_ptr = build_struct_gep list_val 0 "length_ptr" builder in
+      let length = build_load length_ptr "length" builder in
+      let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
+      let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
+
+      (* Create counter variable *)
+      let counter_ptr = build_alloca i64_t "counter" builder in
+      ignore (build_store (const_int i64_t 0) counter_ptr builder);
+
+      (* Jump to the loop block *)
+      ignore (build_br loop_bb builder);
+
+      (* Start insertion in loop block *)
+      position_at_end loop_bb builder;
+
+      (* Load the current counter value *)
+      let current = build_load counter_ptr "current" builder in
+
+      (* Check if we should continue looping *)
+      let cond = build_icmp Icmp.Slt current length "loopcond" builder in
+
+      (* Create blocks for the loop body and increment *)
+      let body_bb = append_block context "loop_body" the_function in
+      let inc_bb = append_block context "loop_inc" the_function in
+
+      ignore (build_cond_br cond body_bb after_bb builder);
+
+      (* Generate code for the loop body *)
+      position_at_end body_bb builder;
+
+      (* Get current element from the array *)
+      let elem_ptr = build_gep arr_ptr [| current |] "elem_ptr" builder in
+      let elem = build_load elem_ptr "elem" builder in
+
+      (* Create variable for the loop body *)
+      let var_ptr = build_alloca (type_of elem) var.v_name builder in
+      Hashtbl.add named_values var.v_name var_ptr;
+      ignore (build_store elem var_ptr builder);
+
+      (* Generate code for the body *)
+      codegen_stmt body;
+
+      (* Remove the loop variable from scope *)
+      Hashtbl.remove named_values var.v_name;
+
+      ignore (build_br inc_bb builder);
+
+      (* Increment counter *)
+      position_at_end inc_bb builder;
+      let next = build_add current (const_int i64_t 1) "next" builder in
+      ignore (build_store next counter_ptr builder);
+      ignore (build_br loop_bb builder);
+
+      (* Move builder to after the loop *)
+      position_at_end after_bb builder;
+      ()
+
+  | TSeval e -> ignore (codegen_expr e)
+  | TSset (list_expr, index_expr, value_expr) ->
+      let list_val_raw = codegen_expr list_expr in
+      let list_val =
+        if type_of list_val_raw = pointer_type list_t then
+          list_val_raw
+        else
+          let box_ptr = build_bitcast list_val_raw (pointer_type box_t) "list_box_ptr" builder in
+          let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
+          let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
+          build_load data_ptr_listp "list_val" builder
       in
 
       let index_val = codegen_expr index_expr in
       let val_ll = codegen_expr value_expr in
 
-      (* Box the value *)
-      let box_val_for_set val_ll =
-        let val_type = type_of val_ll in
-        if val_type = i64_t then
-          (* Box int *)
-          let i64_ptr = alloc_box () in
-          let box_ptr = build_bitcast i64_ptr (pointer_type box_t) "box_ptr" builder in
-          store_tag box_ptr 0;
-          let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
-          let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
-          ignore (build_store val_ll data_ptr_i64 builder);
-          i64_ptr
-        else if val_type = i1_t then
-          let bool_val = match int64_of_const (build_zext val_ll i64_t "bool_zext" builder) with
-            | Some x -> x
-            | None -> 0L
-          in
-          box_bool (bool_val = 1L)
-        else if val_type = str_t then
-          box_string val_ll
-        else if val_type = pointer_type list_t then
-          box_list val_ll
-        else
-          failwith "Unsupported type in TSset value"
-      in
-
-      let boxed_val = box_val_for_set val_ll in
+      let boxed_val = box_value_for_list val_ll value_expr in
 
       let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" builder in
       let arr_ptr = build_load arr_ptr_ptr "arr_ptr" builder in
@@ -734,7 +780,7 @@ let write_ir_to_file filename =
   print_endline ("Wrote LLVM IR to " ^ filename)
 
 (*============================================*)
-(* Implementing the print_list function        *)
+(* Initialize print_list Function             *)
 (*============================================*)
 
 let () =

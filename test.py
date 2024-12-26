@@ -1,4 +1,4 @@
 
-def f(x):
-    return f()
-print(0)
+a = [1,"a",[3,4]]
+a[2][0] = 5
+print(a)
