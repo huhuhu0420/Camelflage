@@ -47,47 +47,17 @@ let named_values:(string, llvalue) Hashtbl.t = Hashtbl.create 10
 (* External Functions Declarations            *)
 (*============================================*)
 
-(* malloc *)
-let malloc_t = var_arg_function_type (pointer_type i8_t) [| i64_t |]
-let malloc_fn =
-  match lookup_function "malloc" the_module with
+let declare_fn name fn_type =
+  match lookup_function name the_module with
   | Some f -> f
-  | None -> declare_function "malloc" malloc_t the_module
+  | None -> declare_function name fn_type the_module
 
-(* printf *)
-let printf_t = var_arg_function_type i32_t [| str_t |]
-let printf_func =
-  match lookup_function "printf" the_module with
-  | Some f -> f
-  | None -> declare_function "printf" printf_t the_module
-
-(* strlen *)
-let strlen_t = function_type i64_t [| str_t |]
-let strlen_fn =
-  match lookup_function "strlen" the_module with
-  | Some f -> f
-  | None -> declare_function "strlen" strlen_t the_module
-
-(* memcpy *)
-let memcpy_t = var_arg_function_type (pointer_type i8_t) [| pointer_type i8_t; pointer_type i8_t; i64_t |]
-let memcpy_fn =
-  match lookup_function "memcpy" the_module with
-  | Some f -> f
-  | None -> declare_function "memcpy" memcpy_t the_module
-
-(* exit *)  
-let exit_t = function_type void_t [| i32_t |]
-let exit_fn =
-  match lookup_function "exit" the_module with
-  | Some f -> f
-  | None -> declare_function "exit" exit_t the_module
-
-(* print_list *)
-let print_list_t = function_type void_t [| pointer_type list_t |]
-let print_list_fn =
-  match lookup_function "print_list" the_module with
-  | Some f -> f
-  | None -> declare_function "print_list" print_list_t the_module
+let malloc_fn = declare_fn "malloc" (var_arg_function_type (pointer_type i8_t) [| i64_t |])
+let printf_fn = declare_fn "printf" (var_arg_function_type i32_t [| str_t |])
+let strlen_fn = declare_fn "strlen" (function_type i64_t [| str_t |])
+let memcpy_fn = declare_fn "memcpy" (var_arg_function_type (pointer_type i8_t) [| pointer_type i8_t; pointer_type i8_t; i64_t |])
+let exit_fn = declare_fn "exit" (function_type void_t [| i32_t |])
+let print_list_fn = declare_fn "print_list" (function_type void_t [| pointer_type list_t |])
 
 (*============================================*)
 (* Boxing/Unboxing Helpers                    *)
@@ -191,7 +161,7 @@ let print_boxed_element builder elem_ptr =
   let data_ptr_i64_int = build_bitcast data_ptr_int (pointer_type i64_t) "data_ptr_i64_int" builder in
   let int_val = build_load data_ptr_i64_int "int_val" builder in
   let fmt_str_int = build_global_stringptr "%lld" "fmt_int" builder in
-  ignore (build_call printf_func [| fmt_str_int; int_val |] "" builder);
+  ignore (build_call printf_fn [| fmt_str_int; int_val |] "" builder);
   ignore (build_br end_bb builder);
 
   (* bool_case *)
@@ -204,7 +174,7 @@ let print_boxed_element builder elem_ptr =
   let false_str = build_global_stringptr "False" "false_str" builder in
   let chosen_str = build_select bool_cond true_str false_str "chosen_str" builder in
   let fmt_str_bool = build_global_stringptr "%s" "fmt_bool" builder in
-  ignore (build_call printf_func [| fmt_str_bool; chosen_str |] "" builder);
+  ignore (build_call printf_fn [| fmt_str_bool; chosen_str |] "" builder);
   ignore (build_br end_bb builder);
 
   (* str_case *)
@@ -213,7 +183,7 @@ let print_boxed_element builder elem_ptr =
   let data_ptr_i8p = build_bitcast data_ptr_str (pointer_type (pointer_type i8_t)) "data_ptr_i8p_str" builder in
   let str_val = build_load data_ptr_i8p "str_val" builder in
   let fmt_str_str = build_global_stringptr "%s" "fmt_str" builder in
-  ignore (build_call printf_func [| fmt_str_str; str_val |] "" builder);
+  ignore (build_call printf_fn [| fmt_str_str; str_val |] "" builder);
   ignore (build_br end_bb builder);
 
   (* list_case *)
@@ -228,7 +198,7 @@ let print_boxed_element builder elem_ptr =
   position_at_end default_bb builder;
   let unknown_str = build_global_stringptr "???" "unknown_str" builder in
   let fmt_str_unk = build_global_stringptr "%s" "fmt_unk" builder in
-  ignore (build_call printf_func [| fmt_str_unk; unknown_str |] "" builder);
+  ignore (build_call printf_fn [| fmt_str_unk; unknown_str |] "" builder);
   ignore (build_br end_bb builder);
 
   position_at_end end_bb builder;
@@ -414,15 +384,15 @@ let rec codegen_expr = function
         let range_size_opt = int64_of_const arg_val in
         let range_size = match range_size_opt with
           | Some x -> Int64.to_int x
-          | None -> failwith "range expects a constant integer argument" in
+          | None ->failwith "range expects a constant integer argument" in
 
         (* Construct the TElist node with integers 0..range_size-1 *)
-        let rec aux i =
+        let rec gen_range_list i =
           if i = range_size then []
-          else TEcst (Cint (Int64.of_int i)) :: aux (i + 1)
+          else TEcst (Cint (Int64.of_int i)) :: gen_range_list (i + 1)
         in
-        let elements = aux 0 in
-        codegen_list elements (* directly call codegen_list as we have a helper for TElist *)
+        let elements = gen_range_list 0 in
+        codegen_list elements
       end
     else if fn.fn_name = "list" then
       begin
@@ -507,7 +477,7 @@ let rec codegen_expr = function
     position_at_end out_of_bounds_bb builder;
     let err_str = build_global_stringptr "Index out of bounds\n" "err_str" builder in
     let fmt_str = build_global_stringptr "%s" "fmt_str" builder in
-    ignore (build_call printf_func [| fmt_str; err_str |] "" builder);
+    ignore (build_call printf_fn [| fmt_str; err_str |] "" builder);
     ignore (build_call exit_fn [| const_int i32_t 1 |] "" builder);
     ignore (build_unreachable builder);
 
@@ -584,16 +554,16 @@ let rec codegen_stmt = function
       let false_str = build_global_stringptr "False" "false" builder in
       let cond = build_icmp Icmp.Eq arg (const_int i1_t 1) "cond" builder in
       let str = build_select cond true_str false_str "str" builder in
-      ignore (build_call printf_func [| fmt_str; str |] "" builder)
+      ignore (build_call printf_fn [| fmt_str; str |] "" builder)
     in
     (match arg_type with
      | t when t = i64_t ->
        let fmt_str = build_global_stringptr "%lld" "fmt" builder in
-       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
+       ignore (build_call printf_fn [| fmt_str; arg |] "" builder)
      | t when t = i1_t -> print_bool arg
      | t when t = str_t ->
        let fmt_str = build_global_stringptr "%s" "fmt" builder in
-       ignore (build_call printf_func [| fmt_str; arg |] "" builder)
+       ignore (build_call printf_fn [| fmt_str; arg |] "" builder)
      | t when t = pointer_type list_t ->
        ignore (build_call print_list_fn [| arg |] "" builder)
      | t when t = box_ptr_t ->
@@ -603,7 +573,7 @@ let rec codegen_stmt = function
     (* Print a newline *)
       let newline_str = build_global_stringptr "\n" "newline" builder in
       let fmt_str = build_global_stringptr "%s" "fmt" builder in
-      ignore (build_call printf_func [| fmt_str; newline_str |] "" builder)
+      ignore (build_call printf_fn [| fmt_str; newline_str |] "" builder)
 
   | TSblock stmts -> List.iter codegen_stmt stmts
   | TSfor (var, list_expr, body) ->
@@ -621,7 +591,7 @@ let rec codegen_stmt = function
       let the_function = block_parent (insertion_block builder) in
       
       (* Create blocks for the loop *)
-      let preheader_bb = insertion_block builder in
+      let _ = insertion_block builder in
       let loop_bb = append_block context "loop" the_function in
       let after_bb = append_block context "afterloop" the_function in
 
@@ -795,7 +765,7 @@ let () =
     (* Print "[" *)
     let open_bracket = build_global_stringptr "[" "open_bracket" builder in
     let fmt_str = build_global_stringptr "%s" "fmt" builder in
-    ignore (build_call printf_func [| fmt_str; open_bracket |] "" builder);
+    ignore (build_call printf_fn [| fmt_str; open_bracket |] "" builder);
 
     (* Extract length and elements *)
     let length_ptr = build_struct_gep list_ptr 0 "length_ptr_list" builder in
@@ -830,7 +800,7 @@ let () =
 
     position_at_end comma_bb builder;
     let comma_str = build_global_stringptr ", " "comma_str" builder in
-    ignore (build_call printf_func [| fmt_str; comma_str |] "" builder);
+    ignore (build_call printf_fn [| fmt_str; comma_str |] "" builder);
     ignore (build_br no_comma_bb builder);
 
     position_at_end no_comma_bb builder;
@@ -846,7 +816,7 @@ let () =
     (* loop_end: print "]" *)
     position_at_end loop_end_bb builder;
     let close_bracket = build_global_stringptr "]" "close_bracket" builder in
-    ignore (build_call printf_func [| fmt_str; close_bracket |] "" builder);
+    ignore (build_call printf_fn [| fmt_str; close_bracket |] "" builder);
     ignore (build_ret_void builder);
   end;
 
