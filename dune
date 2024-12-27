@@ -16,7 +16,8 @@
   Print_typed_ast
   Print_ast
   compile
-  x86_64)
+  x86_64
+  utils)
  (libraries llvm llvm.bitwriter llvm.analysis)
  (promote (until-clean))
  (flags ()))
