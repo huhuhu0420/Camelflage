@@ -59,7 +59,8 @@ let print_list_fn = declare_fn "print_list" (function_type void_t [| pointer_typ
 (* Allocate a box_t (9 bytes: 1 for tag, 8 for data) *)
 let alloc_box () =
   let size = const_int i64_t 9 in
-  build_call malloc_fn [| size |] "box_ptr_raw" builder
+  let box_ptr_i8 = build_call malloc_fn [| size |] "box_ptr_raw" builder in
+  build_bitcast box_ptr_i8 box_ptr_t "box_ptr" builder
 
 (* Store tag into box_t *)
 let store_tag box_ptr tag_val =
@@ -72,43 +73,44 @@ let store_i64_in_box box_ptr i64_val =
   let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
   ignore (build_store i64_val data_ptr_i64 builder)
 
+(* Box null*)
+let box_null () =
+  let box_ptr = alloc_box () in
+  store_tag box_ptr 4;
+  store_i64_in_box box_ptr (const_int i64_t 0);
+  box_ptr
+
 (* Box an integer *)
 let box_int i =
-  let box_ptr_i8 = alloc_box () in
-  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+  let box_ptr = alloc_box () in
   store_tag box_ptr 0;
   store_i64_in_box box_ptr (const_int i64_t i);
-  box_ptr_i8
+  box_ptr
 
 (* Box a boolean *)
 let box_bool b =
-  let box_ptr_i8 = alloc_box () in
-  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+  let box_ptr = alloc_box () in
   store_tag box_ptr 1;
   store_i64_in_box box_ptr (const_int i64_t (if b then 1 else 0));
-  box_ptr_i8
+  box_ptr
 
 (* Box a string (store the string pointer) *)
 let box_string str_val =
-  let box_ptr_i8 = alloc_box () in
-  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+  let box_ptr = alloc_box () in
   store_tag box_ptr 2;
-
   let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
   let data_ptr_i8p = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) "data_ptr_i8p" builder in
   ignore (build_store str_val data_ptr_i8p builder);
-  box_ptr_i8
+  box_ptr
 
 (* Box a list pointer *)
 let box_list list_ptr_val =
-  let box_ptr_i8 = alloc_box () in
-  let box_ptr = build_bitcast box_ptr_i8 (pointer_type box_t) "box_ptr" builder in
+  let box_ptr = alloc_box () in
   store_tag box_ptr 3;
-
   let data_ptr = build_struct_gep box_ptr 1 "data_ptr" builder in
   let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
   ignore (build_store list_ptr_val data_ptr_listp builder);
-  box_ptr_i8
+  box_ptr
 
 (*============================================*)
 (* Printing a Boxed Element Helper            *)

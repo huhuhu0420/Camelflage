@@ -17,10 +17,11 @@ let named_values:(string, llvalue) Hashtbl.t = Hashtbl.create 10
 (*============================================*)
 
 let codegen_const = function
-  | Cnone      -> const_null i64_t
-  | Cbool b    -> const_int i1_t (if b then 1 else 0)
-  | Cint i     -> const_int i64_t (Int64.to_int i)
-  | Cstring s  -> build_global_stringptr s "strtmp" Utils.builder
+  | Cnone -> box_null ()
+  | Cbool b -> box_bool b
+  | Cint i -> box_int (Int64.to_int i)
+  | Cstring s -> box_string (build_global_stringptr s "strtmp" Utils.builder)
+
 
 (* Forward reference to codegen_expr, needed in codegen_list *)
 let codegen_expr_ref = ref (fun _ -> const_null i64_t)
@@ -48,14 +49,11 @@ let codegen_list (elements: texpr list) =
   (* Evaluate and box each element *)
   List.iteri (fun i el ->
     let val_ll = (!codegen_expr_ref) el in
-    let boxed_val = Utils.box_value_for_list val_ll el in
-
     let elem_ptr = build_gep elem_array [| const_int i64_t i |] ("elem_ptr_" ^ string_of_int i) Utils.builder in
-    let boxed_ptr = build_bitcast boxed_val (pointer_type box_t) "boxed_ptr" Utils.builder in
-    ignore (build_store boxed_ptr elem_ptr Utils.builder);
+    ignore (build_store val_ll elem_ptr Utils.builder);
   ) elements;
 
-  list_ptr
+  box_list list_ptr
 
 (*============================================*)
 (* Codegen for Expressions                    *)
@@ -346,15 +344,20 @@ let rec codegen_stmt = function
     in
     (match arg_type with
      | t when t = i64_t ->
+      Printf.printf "Printing integer\n";
        let fmt_str = build_global_stringptr "%lld" "fmt" Utils.builder in
        ignore (build_call printf_fn [| fmt_str; arg |] "" Utils.builder)
-     | t when t = i1_t -> print_bool arg
+     | t when t = i1_t -> 
+      Printf.printf "Printing boolean\n";
+      print_bool arg
      | t when t = str_t ->
-       let fmt_str = build_global_stringptr "%s" "fmt" Utils.builder in
-       ignore (build_call printf_fn [| fmt_str; arg |] "" Utils.builder)
+      Printf.printf "Printing string\n";
+      print_boxed_element Utils.builder arg;
      | t when t = pointer_type list_t ->
+      Printf.printf "Printing list\n";
        ignore (build_call print_list_fn [| arg |] "" Utils.builder)
      | t when t = box_ptr_t ->
+      Printf.printf "Printing boxed element\n";
        print_boxed_element Utils.builder arg;
      | _ -> failwith "Unsupported type in print");
 
