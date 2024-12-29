@@ -134,13 +134,15 @@ let rec codegen_expr = function
           | l, r when type_of l = i64_t && type_of r = i64_t -> build_add l r "addtmp" Utils.builder
           | l, r when type_of l = str_t && type_of r = str_t ->
             let _ = build_global_stringptr "%s%s" "fmt" Utils.builder in
-            let str_val = build_call malloc_fn [| const_int i64_t 100 |] "str_val" Utils.builder in
-            let str_val_ptr = build_bitcast str_val str_t "str_val_ptr" Utils.builder in
             let l_len = build_call strlen_fn [| l |] "l_len" Utils.builder in
             let r_len = build_call strlen_fn [| r |] "r_len" Utils.builder in
-            let _ = build_add l_len r_len "total_len" Utils.builder in
-            ignore (build_call memcpy_fn [| str_val_ptr; l; l_len |] "" Utils.builder);
-            ignore (build_call memcpy_fn [| build_gep str_val_ptr [| l_len |] "r_start" Utils.builder; r; r_len |] "" Utils.builder);
+            let total_len = build_add (build_add l_len r_len "len_sum" Utils.builder)
+                           (const_int i64_t 1) "total_len" Utils.builder in
+            let str_val_ptr = build_call malloc_fn [| total_len |] "str_val_ptr" Utils.builder in
+            let _ = build_call memcpy_fn [| str_val_ptr; l; l_len |] "" Utils.builder in
+            let _ = build_call memcpy_fn [| build_gep str_val_ptr [| l_len |] "r_start" Utils.builder; r; r_len |] "" Utils.builder in
+            let null_pos = build_gep str_val_ptr [| build_sub total_len (const_int i64_t 1) "null_pos_offset" Utils.builder |] "null_pos" Utils.builder in
+              ignore (build_store (const_int i8_t 0) null_pos Utils.builder);
             str_val_ptr
           | _ -> build_add lhs_val rhs_val "addtmp" Utils.builder);
        | Bsub -> build_sub (codegen_expr lhs) (codegen_expr rhs) "subtmp" Utils.builder
