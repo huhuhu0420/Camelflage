@@ -2,6 +2,7 @@
  
 open Ast
 open Utils
+open Math
 open Llvm
 open Llvm_analysis
 open Llvm_bitwriter
@@ -73,43 +74,15 @@ let rec codegen_expr = function
        | Bor ->
             build_add (codegen_expr lhs) (codegen_expr rhs) "ortmp" Utils.builder
        | Badd -> 
-          let l_box = codegen_expr lhs in
-          let r_box = codegen_expr rhs in
-          (* Get tag for left operand *)
-          let l_tag_ptr = build_struct_gep l_box 0 "l_tag_ptr" Utils.builder in
-          let l_tag = build_load l_tag_ptr "l_tag" Utils.builder in
-          
-          (* Get tag for right operand *)
-          let r_tag_ptr = build_struct_gep r_box 0 "r_tag_ptr" Utils.builder in
-          let r_tag = build_load r_tag_ptr "r_tag" Utils.builder in
-          
-          (* Get data pointers *)
-          let l_data_ptr = build_struct_gep l_box 1 "l_data_ptr" Utils.builder in
-          let r_data_ptr = build_struct_gep r_box 1 "r_data_ptr" Utils.builder in
-          
-          (* Cast data pointers to i64* *)
-          let l_data_ptr_i64 = build_bitcast l_data_ptr (pointer_type Utils.i64_t) "l_data_ptr_i64" Utils.builder in
-          let r_data_ptr_i64 = build_bitcast r_data_ptr (pointer_type Utils.i64_t) "r_data_ptr_i64" Utils.builder in
-          
-          (* Load the actual values *)
-          let l_value = build_load l_data_ptr_i64 "l_value" Utils.builder in
-          let r_value = build_load r_data_ptr_i64 "r_value" Utils.builder in
-          
-          let sum = build_add l_value r_value "addtmp" Utils.builder in
-          
-          (match int64_of_const sum with
-          | Some x -> box_int (Int64.to_int x)
-          | None ->
-              (* Create a new box *)
-              let box_ptr = alloc_box () in
-              store_tag box_ptr 0;  (* Tag 0 for integer *)
-              store_i64_in_box box_ptr sum;
-              box_ptr 
-          )
-       | Bsub -> build_sub (codegen_expr lhs) (codegen_expr rhs) "subtmp" Utils.builder
-       | Bmul -> build_mul (codegen_expr lhs) (codegen_expr rhs) "multmp" Utils.builder
-       | Bdiv -> build_sdiv (codegen_expr lhs) (codegen_expr rhs) "divtmp" Utils.builder
-       | Bmod -> build_srem (codegen_expr lhs) (codegen_expr rhs) "modtmp" Utils.builder
+          Math.add (codegen_expr lhs) (codegen_expr rhs)
+       | Bsub ->
+          Math.sub (codegen_expr lhs) (codegen_expr rhs)
+       | Bmul ->
+          Math.mul (codegen_expr lhs) (codegen_expr rhs)
+       | Bdiv -> 
+          Math.div (codegen_expr lhs) (codegen_expr rhs)
+       | Bmod ->
+          Math.modulo (codegen_expr lhs) (codegen_expr rhs)
        | Beq  -> build_icmp Icmp.Eq (codegen_expr lhs) (codegen_expr rhs) "eqtmp" Utils.builder
        | Bneq -> build_icmp Icmp.Ne (codegen_expr lhs) (codegen_expr rhs) "neqtmp" Utils.builder
        | Blt  -> build_icmp Icmp.Ult (codegen_expr lhs) (codegen_expr rhs) "lttmp" Utils.builder

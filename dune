@@ -17,7 +17,8 @@
   Print_ast
   compile
   x86_64
-  utils)
+  utils
+  math)
  (libraries llvm llvm.bitwriter llvm.analysis)
  (promote (until-clean))
  (flags ()))
