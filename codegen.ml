@@ -68,81 +68,44 @@ let rec codegen_expr = function
        with Not_found -> failwith ("Unknown variable name " ^ v.v_name))
     | TEbinop (op, lhs, rhs) ->
       (match op with
-       (* Implement short-circuit evaluation for AND *)
        | Band ->
-          let start_bb = insertion_block Utils.builder in
-          let the_function = block_parent start_bb in
-
-          (* Evaluate left-hand side *)
-          let l = codegen_expr lhs in
-
-          (* Result pointer initialization *)
-          position_at_end start_bb Utils.builder;
-          let result_ptr = build_alloca i1_t "and_result" Utils.builder in
-
-          (* Create blocks for short-circuit paths *)
-          let check_rhs_bb = append_block context "and_check_rhs" the_function in
-          let final_bb = append_block context "and_final" the_function in
-
-          (* Conditional branch based on left-hand side *)
-          ignore (build_cond_br l check_rhs_bb final_bb Utils.builder);
-
-          (* Check right-hand side block *)
-          position_at_end check_rhs_bb Utils.builder;
-          let r = codegen_expr rhs in
-          ignore (build_store r result_ptr Utils.builder);
-          ignore (build_br final_bb Utils.builder);
-
-          (* Final block with phi node *)
-          position_at_end final_bb Utils.builder;
-          build_load result_ptr "and_final_result" Utils.builder
-
-       (* Implement short-circuit evaluation for OR *)
+          build_and (codegen_expr lhs) (codegen_expr rhs) "andtmp" Utils.builder
        | Bor ->
-          let start_bb = insertion_block Utils.builder in
-          let the_function = block_parent start_bb in
-
-          (* Evaluate left-hand side *)
-          let l = codegen_expr lhs in
-
-          (* Result pointer initialization *)
-          let result_ptr = build_alloca i1_t "or_result" Utils.builder in
-          ignore (build_store l result_ptr Utils.builder);
-
-          (* Create blocks for short-circuit paths *)
-          let check_rhs_bb = append_block context "or_check_rhs" the_function in
-          let final_bb = append_block context "or_final" the_function in
-
-          (* Conditional branch based on left-hand side *)
-          ignore (build_cond_br l final_bb check_rhs_bb Utils.builder);
-
-          (* Check right-hand side block *)
-          position_at_end check_rhs_bb Utils.builder;
-          let r = codegen_expr rhs in
-          ignore (build_store r result_ptr Utils.builder);
-          ignore (build_br final_bb Utils.builder);
-
-          (* Final block with phi node *)
-          position_at_end final_bb Utils.builder;
-          build_load result_ptr "or_final_result" Utils.builder
+            build_add (codegen_expr lhs) (codegen_expr rhs) "ortmp" Utils.builder
        | Badd -> 
-          let lhs_val = codegen_expr lhs in
-          let rhs_val = codegen_expr rhs in
-          (match lhs_val, rhs_val with
-          | l, r when type_of l = i64_t && type_of r = i64_t -> build_add l r "addtmp" Utils.builder
-          | l, r when type_of l = str_t && type_of r = str_t ->
-            let _ = build_global_stringptr "%s%s" "fmt" Utils.builder in
-            let l_len = build_call strlen_fn [| l |] "l_len" Utils.builder in
-            let r_len = build_call strlen_fn [| r |] "r_len" Utils.builder in
-            let total_len = build_add (build_add l_len r_len "len_sum" Utils.builder)
-                           (const_int i64_t 1) "total_len" Utils.builder in
-            let str_val_ptr = build_call malloc_fn [| total_len |] "str_val_ptr" Utils.builder in
-            let _ = build_call memcpy_fn [| str_val_ptr; l; l_len |] "" Utils.builder in
-            let _ = build_call memcpy_fn [| build_gep str_val_ptr [| l_len |] "r_start" Utils.builder; r; r_len |] "" Utils.builder in
-            let null_pos = build_gep str_val_ptr [| build_sub total_len (const_int i64_t 1) "null_pos_offset" Utils.builder |] "null_pos" Utils.builder in
-              ignore (build_store (const_int i8_t 0) null_pos Utils.builder);
-            str_val_ptr
-          | _ -> build_add lhs_val rhs_val "addtmp" Utils.builder);
+          let l_box = codegen_expr lhs in
+          let r_box = codegen_expr rhs in
+          (* Get tag for left operand *)
+          let l_tag_ptr = build_struct_gep l_box 0 "l_tag_ptr" Utils.builder in
+          let l_tag = build_load l_tag_ptr "l_tag" Utils.builder in
+          
+          (* Get tag for right operand *)
+          let r_tag_ptr = build_struct_gep r_box 0 "r_tag_ptr" Utils.builder in
+          let r_tag = build_load r_tag_ptr "r_tag" Utils.builder in
+          
+          (* Get data pointers *)
+          let l_data_ptr = build_struct_gep l_box 1 "l_data_ptr" Utils.builder in
+          let r_data_ptr = build_struct_gep r_box 1 "r_data_ptr" Utils.builder in
+          
+          (* Cast data pointers to i64* *)
+          let l_data_ptr_i64 = build_bitcast l_data_ptr (pointer_type Utils.i64_t) "l_data_ptr_i64" Utils.builder in
+          let r_data_ptr_i64 = build_bitcast r_data_ptr (pointer_type Utils.i64_t) "r_data_ptr_i64" Utils.builder in
+          
+          (* Load the actual values *)
+          let l_value = build_load l_data_ptr_i64 "l_value" Utils.builder in
+          let r_value = build_load r_data_ptr_i64 "r_value" Utils.builder in
+          
+          let sum = build_add l_value r_value "addtmp" Utils.builder in
+          
+          (match int64_of_const sum with
+          | Some x -> box_int (Int64.to_int x)
+          | None ->
+              (* Create a new box *)
+              let box_ptr = alloc_box () in
+              store_tag box_ptr 0;  (* Tag 0 for integer *)
+              store_i64_in_box box_ptr sum;
+              box_ptr 
+          )
        | Bsub -> build_sub (codegen_expr lhs) (codegen_expr rhs) "subtmp" Utils.builder
        | Bmul -> build_mul (codegen_expr lhs) (codegen_expr rhs) "multmp" Utils.builder
        | Bdiv -> build_sdiv (codegen_expr lhs) (codegen_expr rhs) "divtmp" Utils.builder
