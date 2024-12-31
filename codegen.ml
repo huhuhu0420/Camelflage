@@ -83,12 +83,18 @@ let rec codegen_expr = function
           Math.div (codegen_expr lhs) (codegen_expr rhs)
        | Bmod ->
           Math.modulo (codegen_expr lhs) (codegen_expr rhs)
-       | Beq  -> build_icmp Icmp.Eq (codegen_expr lhs) (codegen_expr rhs) "eqtmp" Utils.builder
-       | Bneq -> build_icmp Icmp.Ne (codegen_expr lhs) (codegen_expr rhs) "neqtmp" Utils.builder
-       | Blt  -> build_icmp Icmp.Ult (codegen_expr lhs) (codegen_expr rhs) "lttmp" Utils.builder
-       | Ble  -> build_icmp Icmp.Ule (codegen_expr lhs) (codegen_expr rhs) "letmp" Utils.builder
-       | Bgt  -> build_icmp Icmp.Ugt (codegen_expr lhs) (codegen_expr rhs) "gttmp" Utils.builder
-       | Bge  -> build_icmp Icmp.Uge (codegen_expr lhs) (codegen_expr rhs) "getmp" Utils.builder)
+       | Beq  -> 
+          Math.eq (codegen_expr lhs) (codegen_expr rhs)
+       | Bneq -> 
+          Math.neq (codegen_expr lhs) (codegen_expr rhs)
+       | Blt  -> 
+          Math.lt (codegen_expr lhs) (codegen_expr rhs)
+       | Ble  -> 
+          Math.le (codegen_expr lhs) (codegen_expr rhs)
+       | Bgt  -> 
+          Math.gt (codegen_expr lhs) (codegen_expr rhs)
+       | Bge  -> 
+          Math.ge (codegen_expr lhs) (codegen_expr rhs))
   | TEunop (op, e) ->
       let v = codegen_expr e in
       (match op with
