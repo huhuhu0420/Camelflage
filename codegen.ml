@@ -174,6 +174,49 @@ let rec codegen_expr = function
             codegen_expr range_expr
         | _ -> failwith "list() requires exactly one argument (a range)"
       end
+    else if fn.fn_name = "len" then
+      begin
+        let sw_bb = insertion_block Utils.builder in
+        let the_function = block_parent sw_bb in
+        let str_case = append_block context "str_case" the_function in
+        let list_case = append_block context "list_case" the_function in
+        let other_case = append_block context "other_case" the_function in
+        let merge_bb = append_block context "len_merge" the_function in
+
+        let arg = codegen_expr (List.hd args) in
+        let tag = Utils.get_tag arg in
+
+        let switch_instr = build_switch tag other_case 2 Utils.builder in
+        ignore (add_case switch_instr (const_int i8_t 2) str_case);
+        ignore (add_case switch_instr (const_int i8_t 3) list_case);
+
+        position_at_end str_case Utils.builder;
+        let arg_str = get_str_value arg Utils.builder in
+        let str_len = build_call strlen_fn [| arg_str |] "str_len" Utils.builder in
+        let str_len_box = box_int_value str_len "str_len_box" Utils.builder in
+        ignore (build_br merge_bb Utils.builder);
+
+        position_at_end list_case Utils.builder;
+        let data_ptr_list = build_struct_gep arg 1 "data_ptr_list" Utils.builder in
+        let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" Utils.builder in
+        let list_ptr = build_load data_ptr_listp "list_ptr" Utils.builder in
+        let length_ptr = build_struct_gep list_ptr 0 "length_ptr" Utils.builder in
+        let length = build_load length_ptr "length" Utils.builder in
+        let length_box = box_int_value length "length_box" Utils.builder in
+
+        ignore (build_br merge_bb Utils.builder);
+
+        position_at_end other_case Utils.builder;
+        let err_str = build_global_stringptr "len() requires a string or list" "err_str" Utils.builder in
+        let fmt_str = build_global_stringptr "%s" "fmt_str" Utils.builder in
+        ignore (build_call printf_fn [| fmt_str; err_str |] "" Utils.builder);
+        ignore (build_call exit_fn [| const_int i32_t 1 |] "" Utils.builder);
+        ignore (build_unreachable Utils.builder);
+
+        position_at_end merge_bb Utils.builder;
+        let phi = build_phi [ (str_len_box, str_case); (length_box, list_case) ] "len_phi" Utils.builder in
+        phi
+      end
     else
       (* Original code for TEcall remains the same for other functions *)
       let callee =
@@ -204,11 +247,6 @@ let rec codegen_expr = function
         let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" Utils.builder in
         build_load data_ptr_listp "list_val" Utils.builder
     in
-
-    let get_int_value box builder =
-      let data_ptr = build_struct_gep box 1 "data_ptr" builder in
-      let data_ptr_i64 = build_bitcast data_ptr (pointer_type Utils.i64_t) "data_ptr_i64" builder in
-      build_load data_ptr_i64 "value" builder in
 
     (* Generate code for the index expression *)
     let index_val = codegen_expr index_expr in

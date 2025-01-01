@@ -132,6 +132,11 @@ let get_bool_value box builder =
   let bool_cond = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_cond" builder in
   build_zext bool_cond i1_t "bool_val" builder
 
+let get_str_value box builder =
+  let data_ptr = build_struct_gep box 1 "data_ptr" builder in
+  let data_ptr_i8p = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) "data_ptr_i8p" builder in
+  build_load data_ptr_i8p "str_val" builder
+
 (*============================================*)
 (* Printing a Boxed Element Helper            *)
 (*============================================*)
