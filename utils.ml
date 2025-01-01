@@ -48,6 +48,8 @@ let declare_fn name fn_type =
 let malloc_fn = declare_fn "malloc" (var_arg_function_type (pointer_type i8_t) [| i64_t |])
 let printf_fn = declare_fn "printf" (var_arg_function_type i32_t [| str_t |])
 let strlen_fn = declare_fn "strlen" (function_type i64_t [| str_t |])
+let strcmp_fn = declare_fn "strcmp" (function_type i32_t [| str_t; str_t |])
+let memcmp_fn = declare_fn "memcmp" (function_type i32_t [| pointer_type i8_t; pointer_type i8_t; i64_t |])
 let memcpy_fn = declare_fn "memcpy" (var_arg_function_type (pointer_type i8_t) [| pointer_type i8_t; pointer_type i8_t; i64_t |])
 let exit_fn = declare_fn "exit" (function_type void_t [| i32_t |])
 let print_list_fn = declare_fn "print_list" (function_type void_t [| pointer_type list_t |])
@@ -111,6 +113,11 @@ let box_list list_ptr_val =
   let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
   ignore (build_store list_ptr_val data_ptr_listp builder);
   box_ptr
+
+(* get tag *)
+let get_tag box_ptr =
+  let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
+  build_load tag_ptr "tag_val" builder
 
 (*============================================*)
 (* Printing a Boxed Element Helper            *)
