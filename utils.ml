@@ -119,6 +119,19 @@ let get_tag box_ptr =
   let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
   build_load tag_ptr "tag_val" builder
 
+(* Helper function to get integer value from a box *)
+let get_int_value box builder =
+  let data_ptr = build_struct_gep box 1 "data_ptr" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  build_load data_ptr_i64 "value" builder
+
+let get_bool_value box builder =
+  let data_ptr = build_struct_gep box 1 "data_ptr" builder in
+  let data_ptr_i64 = build_bitcast data_ptr (pointer_type i64_t) "data_ptr_i64" builder in
+  let bool_val64 = build_load data_ptr_i64 "bool_val64" builder in
+  let bool_cond = build_icmp Icmp.Eq bool_val64 (const_int i64_t 1) "bool_cond" builder in
+  build_zext bool_cond i1_t "bool_val" builder
+
 (*============================================*)
 (* Printing a Boxed Element Helper            *)
 (*============================================*)

@@ -234,8 +234,6 @@ let rec codegen_expr = function
 let rec codegen_stmt = function
   | TSif (cond, then_stmt, else_stmt) ->
       let cond_val = codegen_expr cond in
-      let zero = const_int (type_of cond_val) 0 in
-      let cond_val = build_icmp Icmp.Ne cond_val zero "ifcond" Utils.builder in
 
       let start_bb = insertion_block Utils.builder in
       let the_function = block_parent start_bb in
@@ -259,7 +257,8 @@ let rec codegen_stmt = function
       if block_terminator new_else_bb = None then ignore (build_br merge_bb Utils.builder);
 
       position_at_end start_bb Utils.builder;
-      ignore (build_cond_br cond_val then_bb else_bb Utils.builder);
+      let cond_val_bool = get_bool_value cond_val Utils.builder in
+      ignore (build_cond_br cond_val_bool then_bb else_bb Utils.builder);
 
       position_at_end merge_bb Utils.builder;
       ()
@@ -422,7 +421,7 @@ let codegen_def (fn, body) =
   Printf.printf "Generating code for function %s\n" fn.fn_name;
   let func_name = fn.fn_name in
   let param_names = List.map (fun v -> v.v_name) fn.fn_params in
-  let param_types = Array.make (List.length param_names) i64_t in
+  let param_types = Array.make (List.length param_names) box_ptr_t in
 
   let func_type =
     if func_name = "main" then
