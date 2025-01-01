@@ -280,38 +280,12 @@ let rec codegen_stmt = function
 
   | TSprint e ->
     let arg = codegen_expr e in
-    let arg_type = type_of arg in
-    let print_bool arg =
-      let fmt_str = build_global_stringptr "%s" "fmt" Utils.builder in
-      let true_str = build_global_stringptr "True" "true" Utils.builder in
-      let false_str = build_global_stringptr "False" "false" Utils.builder in
-      let cond = build_icmp Icmp.Eq arg (const_int i1_t 1) "cond" Utils.builder in
-      let str = build_select cond true_str false_str "str" Utils.builder in
-      ignore (build_call printf_fn [| fmt_str; str |] "" Utils.builder)
-    in
-    (match arg_type with
-     | t when t = i64_t ->
-      Printf.printf "Printing integer\n";
-       let fmt_str = build_global_stringptr "%lld" "fmt" Utils.builder in
-       ignore (build_call printf_fn [| fmt_str; arg |] "" Utils.builder)
-     | t when t = i1_t -> 
-      Printf.printf "Printing boolean\n";
-      print_bool arg
-     | t when t = str_t ->
-      Printf.printf "Printing string\n";
-      print_boxed_element Utils.builder arg;
-     | t when t = pointer_type list_t ->
-      Printf.printf "Printing list\n";
-       ignore (build_call print_list_fn [| arg |] "" Utils.builder)
-     | t when t = box_ptr_t ->
-      Printf.printf "Printing boxed element\n";
-       print_boxed_element Utils.builder arg;
-     | _ -> failwith "Unsupported type in print");
+    print_boxed_element Utils.builder arg;
 
     (* Print a newline *)
-      let newline_str = build_global_stringptr "\n" "newline" Utils.builder in
-      let fmt_str = build_global_stringptr "%s" "fmt" Utils.builder in
-      ignore (build_call printf_fn [| fmt_str; newline_str |] "" Utils.builder)
+    let newline_str = build_global_stringptr "\n" "newline" Utils.builder in
+    let fmt_str = build_global_stringptr "%s" "fmt" Utils.builder in
+    ignore (build_call printf_fn [| fmt_str; newline_str |] "" Utils.builder)
 
   | TSblock stmts -> List.iter codegen_stmt stmts
   | TSfor (var, list_expr, body) ->
