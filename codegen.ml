@@ -103,46 +103,76 @@ let rec codegen_expr = function
   | TEcall (fn, args) ->
     if fn.fn_name = "range" then
       begin
-        (* range(e) *)
-        if List.length args <> 1 then failwith "range expects exactly one argument";
-        let arg_val = codegen_expr (List.hd args) in
-        (* arg_val is an i64 integer: generate a list [0, 1, ..., arg_val-1] *)
-        
-        (* Convert the argument to an integer constant if possible *)
-        let range_size_opt = int64_of_const arg_val in
-        let range_size = match range_size_opt with
-          | Some x -> Int64.to_int x
-          | None ->failwith "range expects a constant integer argument" in
-
-        (* Construct the TElist node with integers 0..range_size-1 *)
-        let rec gen_range_list i =
-          if i = range_size then []
-          else TEcst (Cint (Int64.of_int i)) :: gen_range_list (i + 1)
+        (* Extract the range argument *)
+        let n = match args with
+          | [n_expr] -> codegen_expr n_expr
+          | _ -> failwith "range() requires exactly one argument"
         in
-        let elements = gen_range_list 0 in
-        codegen_list elements
+        
+        (* Get the int value from the boxed value *)
+        let n_val = get_int_value n Utils.builder in
+        
+        (* Create a list_t to store the range *)
+        let list_ptr_i8 = build_call malloc_fn [| const_int i64_t 16 |] "range_list_ptr_raw" Utils.builder in
+        let list_ptr = build_bitcast list_ptr_i8 (pointer_type list_t) "range_list_ptr" Utils.builder in
+        
+        (* Store length *)
+        let length_ptr = build_struct_gep list_ptr 0 "range_length_ptr" Utils.builder in
+        ignore (build_store n_val length_ptr Utils.builder);
+        
+        (* Allocate array for elements *)
+        let total_elems_size = build_mul n_val (const_int i64_t 8) "total_size" Utils.builder in
+        let elem_array_raw = build_call malloc_fn [| total_elems_size |] "range_elem_array_raw" Utils.builder in
+        let elem_array = build_bitcast elem_array_raw (pointer_type (pointer_type box_t)) "range_elem_array" Utils.builder in
+        
+        (* Store elem_array in list_t *)
+        let arr_ptr_ptr = build_struct_gep list_ptr 1 "range_arr_ptr_ptr" Utils.builder in
+        ignore (build_store elem_array arr_ptr_ptr Utils.builder);
+        
+        (* Create loop to fill array with values *)
+        let the_function = block_parent (insertion_block Utils.builder) in
+        let loop_bb = append_block context "range_loop" the_function in
+        let after_bb = append_block context "range_after" the_function in
+        
+        (* Initialize counter *)
+        let counter_ptr = build_alloca i64_t "range_counter" Utils.builder in
+        ignore (build_store (const_int i64_t 0) counter_ptr Utils.builder);
+        ignore (build_br loop_bb Utils.builder);
+        
+        (* Loop body *)
+        position_at_end loop_bb Utils.builder;
+        let current = build_load counter_ptr "range_current" Utils.builder in
+        let continue = build_icmp Icmp.Slt current n_val "range_continue" Utils.builder in
+        
+        let body_bb = append_block context "range_body" the_function in
+        let inc_bb = append_block context "range_inc" the_function in
+        
+        ignore (build_cond_br continue body_bb after_bb Utils.builder);
+        
+        (* Fill current element *)
+        position_at_end body_bb Utils.builder;
+        let boxed_current = box_int_value current "elem" Utils.builder in
+        let elem_ptr = build_gep elem_array [| current |] "range_elem_ptr" Utils.builder in
+        ignore (build_store boxed_current elem_ptr Utils.builder);
+        ignore (build_br inc_bb Utils.builder);
+        
+        (* Increment counter *)
+        position_at_end inc_bb Utils.builder;
+        let next = build_add current (const_int i64_t 1) "range_next" Utils.builder in
+        ignore (build_store next counter_ptr Utils.builder);
+        ignore (build_br loop_bb Utils.builder);
+        
+        (* Continue after loop *)
+        position_at_end after_bb Utils.builder;
+        box_list list_ptr
       end
     else if fn.fn_name = "list" then
       begin
-        (* list(range(e)) *)
-        if List.length args <> 1 then failwith "list expects exactly one argument";
-        let arg = List.hd args in
-
-        (* Evaluate the argument. We assume it's the result of range(e). *)
-        let arg_val = codegen_expr arg in
-        
-        (* If `arg_val` is already a list_t pointer (from range), just return it.
-           If it's a boxed list, unbox it. *)
-        let t = type_of arg_val in
-        if t = pointer_type list_t then
-          (* Already a list pointer, just return it *)
-          arg_val
-        else
-          (* If it's a boxed list, unbox it. *)
-          let box_ptr = build_bitcast arg_val (pointer_type box_t) "list_box_ptr" Utils.builder in
-          let data_ptr = build_struct_gep box_ptr 1 "data_ptr" Utils.builder in
-          let data_ptr_listp = build_bitcast data_ptr (pointer_type (pointer_type list_t)) "data_ptr_listp" Utils.builder in
-          build_load data_ptr_listp "list_val" Utils.builder
+        match args with
+        | [range_expr] -> 
+            (* If argument is range, just return it since range already returns a list *)
+            codegen_expr range_expr
+        | _ -> failwith "list() requires exactly one argument (a range)"
       end
     else
       (* Original code for TEcall remains the same for other functions *)
