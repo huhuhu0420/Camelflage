@@ -14,12 +14,6 @@ let both_have_type tag l_tag r_tag builder =
     (is_type_of tag r_tag builder)
     "both_same_type" builder
 
-(* Helper function to get integer value from a box *)
-let get_int_value box builder =
-  let data_ptr = build_struct_gep box 1 "data_ptr" builder in
-  let data_ptr_i64 = build_bitcast data_ptr (pointer_type Utils.i64_t) "data_ptr_i64" builder in
-  build_load data_ptr_i64 "value" builder
-
 (* Helper function to box an LLVM integer value *)
 let box_int_value value name builder =
   match int64_of_const value with
@@ -202,7 +196,7 @@ let box_bool_ll (value: llvalue) builder =
   ignore (store_tag box_ptr 1); 
   box_ptr
 
-let rec compare_lists (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) (builder: llbuilder) : llvalue =
+(* let rec compare_lists (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) (builder: llbuilder) : llvalue =
   (* Get list pointers *)
   let get_list_ptr box name =
     let data_ptr = build_struct_gep box 1 (name ^ "_list_ptr") builder in
@@ -362,11 +356,11 @@ let rec compare_lists (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) (builde
       | _ -> build_icmp Icmp.Eq (get_int_value final_result builder) (const_int i64_t 0) "final_result" builder) 
     final_length_result
     final_result
-    "result" builder
+    "result" builder *)
 
 
 (* Generic comparison function that handles different types *)
-let rec compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
+let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
   let l_tag = Utils.get_tag l_box in
   let r_tag = Utils.get_tag r_box in
 
@@ -427,7 +421,8 @@ let rec compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llva
 
   (* List comparison *)
   position_at_end list_bb Utils.builder;
-  let list_result = compare_lists l_box r_box int_op Utils.builder in
+  (* let list_result = compare_lists l_box r_box int_op Utils.builder in *)
+  let list_result = box_bool true in
   ignore (build_br merge_bb Utils.builder);
   
   (* Error handling *)

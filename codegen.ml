@@ -175,8 +175,14 @@ let rec codegen_expr = function
         build_load data_ptr_listp "list_val" Utils.builder
     in
 
+    let get_int_value box builder =
+      let data_ptr = build_struct_gep box 1 "data_ptr" builder in
+      let data_ptr_i64 = build_bitcast data_ptr (pointer_type Utils.i64_t) "data_ptr_i64" builder in
+      build_load data_ptr_i64 "value" builder in
+
     (* Generate code for the index expression *)
     let index_val = codegen_expr index_expr in
+    let index_val_int = get_int_value index_val Utils.builder in
 
     (* Extract length and array pointer from the list *)
     let length_ptr = build_struct_gep list_val 0 "length_ptr_list" Utils.builder in
@@ -192,12 +198,12 @@ let rec codegen_expr = function
     let merge_bb = append_block context "get_merge" the_function in
 
     (* Compare index < length *)
-    let cond = build_icmp Icmp.Ult index_val length_val "index_check" Utils.builder in
+    let cond = build_icmp Icmp.Ult index_val_int length_val "index_check" Utils.builder in
     ignore (build_cond_br cond in_bounds_bb out_of_bounds_bb Utils.builder);
 
     (* In bounds: load the element and branch to merge *)
     position_at_end in_bounds_bb Utils.builder;
-    let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" Utils.builder in
+    let elem_ptr = build_gep arr_ptr [| index_val_int |] "elem_ptr" Utils.builder in
     let elem_val = build_load elem_ptr "elem_val" Utils.builder in
     ignore (build_br merge_bb Utils.builder);
 
@@ -400,15 +406,13 @@ let rec codegen_stmt = function
       in
 
       let index_val = codegen_expr index_expr in
+      let index_val_int = get_int_value index_val Utils.builder in
       let val_ll = codegen_expr value_expr in
-
-      let boxed_val = Utils.box_value_for_list val_ll value_expr in
 
       let arr_ptr_ptr = build_struct_gep list_val 1 "arr_ptr_ptr" Utils.builder in
       let arr_ptr = build_load arr_ptr_ptr "arr_ptr" Utils.builder in
-      let elem_ptr = build_gep arr_ptr [| index_val |] "elem_ptr" Utils.builder in
-      let boxed_ptr = build_bitcast boxed_val (pointer_type box_t) "boxed_ptr" Utils.builder in
-      ignore (build_store boxed_ptr elem_ptr Utils.builder)
+      let elem_ptr = build_gep arr_ptr [| index_val_int |] "elem_ptr" Utils.builder in
+      ignore (build_store val_ll elem_ptr Utils.builder)
 
 (*============================================*)
 (* Code Generation for Functions and Modules  *)
