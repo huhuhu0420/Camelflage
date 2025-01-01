@@ -401,7 +401,7 @@ let codegen_def (fn, body) =
     if func_name = "main" then
       function_type i32_t param_types
     else
-      function_type i64_t param_types
+      function_type box_ptr_t param_types
   in
 
   let the_function =
@@ -434,7 +434,7 @@ let codegen_def (fn, body) =
        if func_name = "main" then
          ignore (build_ret (const_int i32_t 0) Utils.builder)
        else
-         ignore (build_ret (const_int i64_t 0) Utils.builder);
+         ignore (build_ret (box_int 0) Utils.builder);
      Llvm_analysis.assert_valid_function the_function;
      the_function
    with e ->
