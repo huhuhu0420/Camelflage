@@ -114,6 +114,13 @@ let box_list list_ptr_val =
   ignore (build_store list_ptr_val data_ptr_listp builder);
   box_ptr
 
+(* Box none *)
+let box_none () =
+  let box_ptr = alloc_box () in
+  store_tag box_ptr 4;
+  store_i64_in_box box_ptr (const_int i64_t 0);
+  box_ptr
+
 (* get tag *)
 let get_tag box_ptr =
   let tag_ptr = build_struct_gep box_ptr 0 "tag_ptr" builder in
@@ -153,6 +160,7 @@ let print_boxed_element builder elem_ptr =
   let bool_case_bb   = append_block context "bool_case" the_function in
   let str_case_bb    = append_block context "str_case" the_function in
   let list_case_bb   = append_block context "list_case" the_function in
+  let none_case_bb   = append_block context "none_case" the_function in 
   let default_bb      = append_block context "default_case" the_function in
   let end_bb          = append_block context "end_case" the_function in
 
@@ -161,6 +169,7 @@ let print_boxed_element builder elem_ptr =
   ignore (add_case switch_inst (const_int i8_t 1) bool_case_bb);
   ignore (add_case switch_inst (const_int i8_t 2) str_case_bb);
   ignore (add_case switch_inst (const_int i8_t 3) list_case_bb);
+  ignore (add_case switch_inst (const_int i8_t 4) none_case_bb);
 
   (* int_case *)
   position_at_end int_case_bb builder;
@@ -199,6 +208,12 @@ let print_boxed_element builder elem_ptr =
   let data_ptr_listp = build_bitcast data_ptr_list (pointer_type (pointer_type list_t)) "data_ptr_listp" builder in
   let list_val = build_load data_ptr_listp "list_val" builder in
   ignore (build_call print_list_fn [| list_val |] "" builder);
+  ignore (build_br end_bb builder);
+
+  (* none_case *)
+  position_at_end none_case_bb builder;
+  let fmt_str_none = build_global_stringptr "None" "fmt_none" builder in
+  ignore (build_call printf_fn [| fmt_str_none |] "" builder);
   ignore (build_br end_bb builder);
 
   (* default_case *)

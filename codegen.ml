@@ -575,7 +575,7 @@ let codegen_def (fn, body) =
        if func_name = "main" then
          ignore (build_ret (const_int i32_t 0) Utils.builder)
        else
-         ignore (build_ret (box_int 0) Utils.builder);
+         ignore (build_ret (box_none()) Utils.builder);
      Llvm_analysis.assert_valid_function the_function;
      the_function
    with e ->

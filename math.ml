@@ -378,6 +378,7 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   let int_bb = create_block "int_cmp" in
   let str_bb = create_block "str_cmp" in
   let list_bb = create_block "list_cmp" in
+  let none_bb = create_block "none_cmp" in
   let error_bb = create_block "type_error" in
   let merge_bb = create_block "merge" in
 
@@ -396,6 +397,7 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   ignore (add_case switch (const_int i8_t 1) bool_bb);   (* Booleans *)
   ignore (add_case switch (const_int i8_t 2) str_bb);    (* Strings *)
   ignore (add_case switch (const_int i8_t 3) list_bb);   (* Lists *)
+  ignore (add_case switch (const_int i8_t 4) none_bb);   (* None *)
 
   (* Integer comparison *)
   position_at_end int_bb Utils.builder;
@@ -442,6 +444,14 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   (* let list_result = compare_lists l_box r_box int_op Utils.builder in *)
   let list_result = box_bool true in
   ignore (build_br merge_bb Utils.builder);
+
+  (* None comparison *)
+  position_at_end none_bb Utils.builder;
+  let l_int = build_zext (const_int i1_t 0) i64_t "l_none_to_i64" Utils.builder in
+  let r_int = build_zext (const_int i1_t 0) i64_t "r_none_to_i64" Utils.builder in
+  let none_result = build_icmp int_op l_int r_int "none_cmp" Utils.builder in
+  let boxed_none_result = box_bool_ll none_result Utils.builder in
+  ignore (build_br merge_bb Utils.builder);
   
   (* Error handling *)
   position_at_end error_bb Utils.builder;
@@ -455,7 +465,8 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
     (boxed_int_result, int_bb); 
     (boxed_bool_result, bool_bb);
     (boxed_str_result, str_bb); 
-    (list_result, list_bb)
+    (list_result, list_bb);
+    (boxed_none_result, none_bb)
     ]
      "result" Utils.builder
 
