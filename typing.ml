@@ -127,8 +127,10 @@ let rec type_check_expr (env : (string, ty) Hashtbl.t) (expr : expr) : ty * texp
         let _, targ = type_check_expr env arg in targ
       ) args in
 
+      let fn_name = if id_str = "main" then "fake_main" else id_str in
+
       let fn = { 
-        fn_name = id_str; 
+        fn_name = fn_name;
         fn_params = List.map (fun _ -> { v_name = "_"; v_ofs = 0 }) args 
       } in
       
@@ -237,9 +239,11 @@ let file ?(debug:bool=false) ((defs, global_stmts) : file) : tfile =
     List.iter (fun param -> 
       Hashtbl.add fn_env param.id TAny
     ) params;
+
+    let fn_name = if id.id = "main" then "fake_main" else id.id in
     
     let fn = { 
-      fn_name = id.id; 
+      fn_name = fn_name;
       fn_params = List.map (fun p -> { v_name = p.id; v_ofs = 0 }) params 
     } in
 
