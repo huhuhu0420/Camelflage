@@ -104,8 +104,8 @@ let rec codegen_expr = function
           let lhs_end_bb = insertion_block Utils.builder in
           let the_function = block_parent lhs_end_bb in
 
-          let rhs_bb = append_block context "and.rhs" the_function in
-          let merge_bb = append_block context "and.merge" the_function in
+          let rhs_bb = append_block context "or.rhs" the_function in
+          let merge_bb = append_block context "or.merge" the_function in
 
           position_at_end lhs_end_bb Utils.builder;
           ignore (build_cond_br lhs_bool merge_bb rhs_bb Utils.builder);
@@ -118,7 +118,7 @@ let rec codegen_expr = function
           position_at_end merge_bb Utils.builder;
           let phi = build_phi
               [ (true_box, lhs_end_bb); (rhs_val, rhs_end_bb) ]
-              "and.result"
+              "or.result"
               Utils.builder
           in
           phi
@@ -157,7 +157,20 @@ let rec codegen_expr = function
           | [n_expr] -> codegen_expr n_expr
           | _ -> failwith "range() requires exactly one argument"
         in
-        
+
+        let start_bb = insertion_block Utils.builder in
+        let the_function = block_parent start_bb in
+        let type_tag = get_tag n in
+
+        let int_case_bb = append_block context "int_case" the_function in
+        let other_case_bb = append_block context "other_case" the_function in
+        let merge_bb = append_block context "range_merge" the_function in
+
+        position_at_end start_bb Utils.builder;
+        let is_int = build_icmp Icmp.Eq type_tag (const_int i8_t 0) "is_int" Utils.builder in
+        ignore (build_cond_br is_int int_case_bb other_case_bb Utils.builder);
+
+        position_at_end int_case_bb Utils.builder;
         (* Get the int value from the boxed value *)
         let n_val = get_int_value n Utils.builder in
         
@@ -213,7 +226,18 @@ let rec codegen_expr = function
         
         (* Continue after loop *)
         position_at_end after_bb Utils.builder;
-        box_list list_ptr
+        let list_ptr_box = box_list list_ptr in
+        ignore (build_br merge_bb Utils.builder);
+        
+        position_at_end other_case_bb Utils.builder;
+        let err_str = build_global_stringptr "range() requires an integer" "err_str" Utils.builder in
+        let fmt_str = build_global_stringptr "%s" "fmt_str" Utils.builder in
+        ignore (build_call printf_fn [| fmt_str; err_str |] "" Utils.builder);
+        ignore (build_call exit_fn [| const_int i32_t 1 |] "" Utils.builder);
+        ignore (build_unreachable Utils.builder);
+
+        position_at_end merge_bb Utils.builder;
+        list_ptr_box
       end
     else if fn.fn_name = "list" then
       begin
