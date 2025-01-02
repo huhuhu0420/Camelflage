@@ -147,8 +147,14 @@ let rec codegen_expr = function
   | TEunop (op, e) ->
       let v = codegen_expr e in
       (match op with
-       | Uneg -> build_neg v "negtmp" Utils.builder
-       | Unot -> build_not v "nottmp" Utils.builder)
+       | Uneg -> 
+        let v_int = get_int_value v Utils.builder in
+        let neg = build_neg v_int "negtmp" Utils.builder in
+        box_int_value neg "negtmp" Utils.builder
+       | Unot -> 
+        let v_bool = get_bool_value v Utils.builder in
+        let not = build_not v_bool "nottmp" Utils.builder in
+        box_bool_ll not Utils.builder)
   | TEcall (fn, args) ->
     if fn.fn_name = "range" then
       begin
