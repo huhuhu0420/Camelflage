@@ -196,6 +196,14 @@ let box_bool_ll (value: llvalue) builder =
   ignore (store_tag box_ptr 1); 
   box_ptr
 
+let perform_bool_op op_name op l_box r_box =
+  let l_value = get_bool_value l_box builder in
+  let r_value = get_bool_value r_box builder in
+  let result = op l_value r_value (op_name ^ "tmp") Utils.builder in
+  box_bool_ll result Utils.builder 
+let and_bool (l_box: llvalue) (r_box: llvalue) : llvalue =
+  perform_bool_op "and" build_and l_box r_box
+
 (* let rec compare_lists (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) (builder: llbuilder) : llvalue =
   (* Get list pointers *)
   let get_list_ptr box name =

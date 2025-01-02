@@ -69,10 +69,59 @@ let rec codegen_expr = function
        with Not_found -> failwith ("Unknown variable name " ^ v.v_name))
     | TEbinop (op, lhs, rhs) ->
       (match op with
-       | Band ->
-          build_and (codegen_expr lhs) (codegen_expr rhs) "andtmp" Utils.builder
+        | Band ->
+          let lhs_val = codegen_expr lhs in
+          let lhs_bool = get_bool_value lhs_val Utils.builder in
+          let false_box = box_bool false in
+          
+          let lhs_end_bb = insertion_block Utils.builder in
+          let the_function = block_parent lhs_end_bb in
+
+          let rhs_bb = append_block context "and.rhs" the_function in
+          let merge_bb = append_block context "and.merge" the_function in
+
+          position_at_end lhs_end_bb Utils.builder;
+          ignore (build_cond_br lhs_bool rhs_bb merge_bb Utils.builder);
+
+          position_at_end rhs_bb Utils.builder;
+          let rhs_val = codegen_expr rhs in
+          let rhs_end_bb = insertion_block Utils.builder in
+          ignore (build_br merge_bb Utils.builder);
+
+          position_at_end merge_bb Utils.builder;
+          let phi = build_phi
+              [ (false_box, lhs_end_bb); (rhs_val, rhs_end_bb) ]
+              "and.result"
+              Utils.builder
+          in
+          phi
+          
        | Bor ->
-            build_add (codegen_expr lhs) (codegen_expr rhs) "ortmp" Utils.builder
+          let lhs_val = codegen_expr lhs in
+          let lhs_bool = get_bool_value lhs_val Utils.builder in
+          let true_box = box_bool true in
+          
+          let lhs_end_bb = insertion_block Utils.builder in
+          let the_function = block_parent lhs_end_bb in
+
+          let rhs_bb = append_block context "and.rhs" the_function in
+          let merge_bb = append_block context "and.merge" the_function in
+
+          position_at_end lhs_end_bb Utils.builder;
+          ignore (build_cond_br lhs_bool merge_bb rhs_bb Utils.builder);
+
+          position_at_end rhs_bb Utils.builder;
+          let rhs_val = codegen_expr rhs in
+          let rhs_end_bb = insertion_block Utils.builder in
+          ignore (build_br merge_bb Utils.builder);
+
+          position_at_end merge_bb Utils.builder;
+          let phi = build_phi
+              [ (true_box, lhs_end_bb); (rhs_val, rhs_end_bb) ]
+              "and.result"
+              Utils.builder
+          in
+          phi
        | Badd -> 
           Math.add (codegen_expr lhs) (codegen_expr rhs)
        | Bsub ->
