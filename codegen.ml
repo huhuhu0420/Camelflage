@@ -490,15 +490,17 @@ let rec codegen_stmt = function
       let elem = build_load elem_ptr "elem" Utils.builder in
 
       (* Create variable for the loop body *)
-      let var_ptr = build_alloca (type_of elem) var.v_name Utils.builder in
-      Hashtbl.add named_values var.v_name var_ptr;
-      ignore (build_store elem var_ptr Utils.builder);
-
-      (* Generate code for the body *)
-      codegen_stmt body;
-
-      (* Remove the loop variable from scope *)
-      Hashtbl.remove named_values var.v_name;
+      (try
+        let var_ptr = Hashtbl.find named_values var.v_name in
+        ignore (build_store elem var_ptr Utils.builder);
+        codegen_stmt body;
+      with Not_found ->
+        let var_ptr = build_alloca (type_of elem) var.v_name Utils.builder in
+        Hashtbl.add named_values var.v_name var_ptr;
+        ignore (build_store elem var_ptr Utils.builder);
+        codegen_stmt body;
+        Hashtbl.remove named_values var.v_name;
+        );
 
       ignore (build_br inc_bb Utils.builder);
 
