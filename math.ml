@@ -201,8 +201,6 @@ let perform_bool_op op_name op l_box r_box =
   let r_value = get_bool_value r_box builder in
   let result = op l_value r_value (op_name ^ "tmp") Utils.builder in
   box_bool_ll result Utils.builder 
-let and_bool (l_box: llvalue) (r_box: llvalue) : llvalue =
-  perform_bool_op "and" build_and l_box r_box
 
 (* let rec compare_lists (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) (builder: llbuilder) : llvalue =
   (* Get list pointers *)
@@ -376,6 +374,7 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   let start_bb = insertion_block Utils.builder in
   let the_function = block_parent start_bb in
   let create_block name = append_block context name the_function in
+  let bool_bb = create_block "bool_cmp" in
   let int_bb = create_block "int_cmp" in
   let str_bb = create_block "str_cmp" in
   let list_bb = create_block "list_cmp" in
@@ -394,6 +393,7 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   position_at_end dispatch_bb Utils.builder;
   let switch = build_switch l_tag error_bb 3 Utils.builder in
   ignore (add_case switch (const_int i8_t 0) int_bb);    (* Integers *)
+  ignore (add_case switch (const_int i8_t 1) bool_bb);   (* Booleans *)
   ignore (add_case switch (const_int i8_t 2) str_bb);    (* Strings *)
   ignore (add_case switch (const_int i8_t 3) list_bb);   (* Lists *)
 
@@ -403,6 +403,16 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   let r_value = get_int_value r_box Utils.builder in
   let int_result = build_icmp int_op l_value r_value "int_cmp" Utils.builder in
   let boxed_int_result = box_bool_ll int_result Utils.builder in
+  ignore (build_br merge_bb Utils.builder);
+
+  (* Boolean comparison *)
+  position_at_end bool_bb Utils.builder;
+  let l_bool = get_bool_value l_box Utils.builder in
+  let r_bool = get_bool_value r_box Utils.builder in
+  let l_int = build_zext l_bool i64_t "l_bool_to_i64" Utils.builder in
+  let r_int = build_zext r_bool i64_t "r_bool_to_i64" Utils.builder in
+  let bool_result = build_icmp int_op l_int r_int "bool_cmp" Utils.builder in
+  let boxed_bool_result = box_bool_ll bool_result Utils.builder in
   ignore (build_br merge_bb Utils.builder);
 
   (* String comparison *)
@@ -443,6 +453,7 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   position_at_end merge_bb Utils.builder;
   build_phi [
     (boxed_int_result, int_bb); 
+    (boxed_bool_result, bool_bb);
     (boxed_str_result, str_bb); 
     (list_result, list_bb)
     ]
