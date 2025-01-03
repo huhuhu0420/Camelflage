@@ -365,13 +365,6 @@ let rec codegen_expr = function
     (* Merge block: phi node to obtain elem_val from in_bounds_bb *)
     position_at_end merge_bb Utils.builder;
     let phi = build_phi [ (elem_val, in_bounds_bb) ] "get_elem_phi" Utils.builder in
-
-    (* Create a new basic block to continue after TEget *)
-    let continue_bb = append_block context "get_continue" the_function in
-    ignore (build_br continue_bb Utils.builder);
-
-    (* Assign the phi node's value as the expression's result in continue_bb *)
-    position_at_end continue_bb Utils.builder;
     phi
 
 (*============================================*)
@@ -385,27 +378,43 @@ let rec codegen_stmt = function
       let start_bb = insertion_block Utils.builder in
       let the_function = block_parent start_bb in
 
+      let tag_type = get_tag cond_val in
+      let sw_bb = insertion_block Utils.builder in
+      let bool_case_bb = append_block context "bool_case" the_function in
+      let int_case_bb = append_block context "int_case" the_function in
       let then_bb = append_block context "then" the_function in
+      let else_bb = append_block context "else" the_function in
+      let merge_bb = append_block context "ifcont" the_function in
+
+      position_at_end sw_bb Utils.builder;
+      let switch_instr = build_switch tag_type bool_case_bb 2 Utils.builder in
+      ignore (add_case switch_instr (const_int i8_t 1) bool_case_bb);
+      ignore (add_case switch_instr (const_int i8_t 0) int_case_bb);
+
+      position_at_end bool_case_bb Utils.builder;
+      let cond_val_bool = get_bool_value cond_val Utils.builder in
+      ignore (build_cond_br cond_val_bool then_bb else_bb Utils.builder);
+
+      position_at_end int_case_bb Utils.builder;
+      let cond_val_int = get_int_value cond_val Utils.builder in
+      let cond_val_bool = build_icmp Icmp.Ne cond_val_int (const_int i64_t 0) "ifcond" Utils.builder in
+      ignore (build_cond_br cond_val_bool then_bb else_bb Utils.builder);
+
       position_at_end then_bb Utils.builder;
       codegen_stmt then_stmt;
       let new_then_bb = insertion_block Utils.builder in
 
-      let else_bb = append_block context "else" the_function in
+      position_at_end new_then_bb Utils.builder;
+      if block_terminator new_then_bb = None then
+        ignore (build_br merge_bb Utils.builder);
+
       position_at_end else_bb Utils.builder;
       codegen_stmt else_stmt;
       let new_else_bb = insertion_block Utils.builder in
 
-      let merge_bb = append_block context "ifcont" the_function in
-
-      position_at_end new_then_bb Utils.builder;
-      if block_terminator new_then_bb = None then ignore (build_br merge_bb Utils.builder);
-
       position_at_end new_else_bb Utils.builder;
-      if block_terminator new_else_bb = None then ignore (build_br merge_bb Utils.builder);
-
-      position_at_end start_bb Utils.builder;
-      let cond_val_bool = get_bool_value cond_val Utils.builder in
-      ignore (build_cond_br cond_val_bool then_bb else_bb Utils.builder);
+      if block_terminator new_else_bb = None then
+        ignore (build_br merge_bb Utils.builder);
 
       position_at_end merge_bb Utils.builder;
       ()
