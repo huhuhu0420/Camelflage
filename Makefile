@@ -16,6 +16,9 @@ minipython.exe:
 clean:
 	dune clean
 
+test:
+	cd tests-mini-python && ./test -3 ../minipython.exe
+
 .PHONY: all clean minipython.exe
 
 
