@@ -14,5 +14,5 @@ services:
       make minipython.exe &&
       cd tests-mini-python &&
       chmod +x test &&
-      ./test -3 ../minipython.exe
+      ./test -all ../minipython.exe
       "

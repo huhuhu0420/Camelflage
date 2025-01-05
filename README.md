@@ -39,6 +39,16 @@ docker-compose up
 The result of the test will be displayed in the terminal.
 
 ```bash
+Testing ../minipython.exe
+
+Part 1 (parsing)
+bad ................................
+good .........................................................................
+Parsing: 105/105 : 100%
+Part 2 (type checking)
+bad ..............
+good ..................................................
+Typing: 64/64 : 100%
 Part 3 (code generation)
 Execution with no runtime error
 -------------------------------
