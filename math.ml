@@ -364,6 +364,40 @@ let perform_bool_op op_name op l_box r_box =
     final_result
     "result" builder *)
 
+let compare_int (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
+  let l_value = get_int_value l_box Utils.builder in
+  let r_value = get_int_value r_box Utils.builder in
+  let result = build_icmp int_op l_value r_value "int_cmp" Utils.builder in
+  box_bool_ll result Utils.builder
+
+let compare_bool (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
+  let l_bool = get_bool_value l_box Utils.builder in
+  let r_bool = get_bool_value r_box Utils.builder in
+  let l_int = build_zext l_bool i64_t "l_bool_to_i64" Utils.builder in
+  let r_int = build_zext r_bool i64_t "r_bool_to_i64" Utils.builder in
+  let result = build_icmp int_op l_int r_int "bool_cmp" Utils.builder in
+  box_bool_ll result Utils.builder
+
+let compare_string (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
+  let get_string_ptr box name =
+    let data_ptr = build_struct_gep box 1 (name ^ "_str_ptr") Utils.builder in
+    let str_ptr = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) (name ^ "_str_ptr_i8") Utils.builder in
+    build_load str_ptr name Utils.builder
+  in
+  let l_str = get_string_ptr l_box "l" in
+  let r_str = get_string_ptr r_box "r" in
+  let strcmp_result = build_call strcmp_fn [| l_str; r_str |] "strcmp_result" Utils.builder in
+  let str_result = (match int_op with
+    | Icmp.Eq -> build_icmp Icmp.Eq strcmp_result (const_int i32_t 0)
+    | Icmp.Ne -> build_icmp Icmp.Ne strcmp_result (const_int i32_t 0)
+    | Icmp.Sgt -> build_icmp Icmp.Sgt strcmp_result (const_int i32_t 0)
+    | Icmp.Sge -> build_icmp Icmp.Sge strcmp_result (const_int i32_t 0)
+    | Icmp.Slt -> build_icmp Icmp.Slt strcmp_result (const_int i32_t 0)
+    | Icmp.Sle -> build_icmp Icmp.Sle strcmp_result (const_int i32_t 0)
+    | _ -> build_icmp Icmp.Eq strcmp_result (const_int i32_t 0)
+  ) "str_cmp" Utils.builder in
+  box_bool_ll str_result Utils.builder
+
 
 (* Generic comparison function that handles different types *)
 let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue =
@@ -401,49 +435,148 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
 
   (* Integer comparison *)
   position_at_end int_bb Utils.builder;
-  let l_value = get_int_value l_box Utils.builder in
-  let r_value = get_int_value r_box Utils.builder in
-  let int_result = build_icmp int_op l_value r_value "int_cmp" Utils.builder in
-  let boxed_int_result = box_bool_ll int_result Utils.builder in
+  let boxed_int_result = compare_int l_box r_box int_op in
   ignore (build_br merge_bb Utils.builder);
 
   (* Boolean comparison *)
   position_at_end bool_bb Utils.builder;
-  let l_bool = get_bool_value l_box Utils.builder in
-  let r_bool = get_bool_value r_box Utils.builder in
-  let l_int = build_zext l_bool i64_t "l_bool_to_i64" Utils.builder in
-  let r_int = build_zext r_bool i64_t "r_bool_to_i64" Utils.builder in
-  let bool_result = build_icmp int_op l_int r_int "bool_cmp" Utils.builder in
-  let boxed_bool_result = box_bool_ll bool_result Utils.builder in
+  let boxed_bool_result = compare_bool l_box r_box int_op in
   ignore (build_br merge_bb Utils.builder);
 
   (* String comparison *)
   position_at_end str_bb Utils.builder;
-  let get_string_ptr box name =
-    let data_ptr = build_struct_gep box 1 (name ^ "_str_ptr") Utils.builder in
-    let str_ptr = build_bitcast data_ptr (pointer_type (pointer_type i8_t)) (name ^ "_str_ptr_i8") Utils.builder in
-    build_load str_ptr name Utils.builder
-  in
-  let l_str = get_string_ptr l_box "l" in
-  let r_str = get_string_ptr r_box "r" in
-  let strcmp_result = build_call strcmp_fn [| l_str; r_str |] "strcmp_result" Utils.builder in
-  let str_result = (match int_op with
-    | Icmp.Eq -> build_icmp Icmp.Eq strcmp_result (const_int i32_t 0)
-    | Icmp.Ne -> build_icmp Icmp.Ne strcmp_result (const_int i32_t 0)
-    | Icmp.Sgt -> build_icmp Icmp.Sgt strcmp_result (const_int i32_t 0)
-    | Icmp.Sge -> build_icmp Icmp.Sge strcmp_result (const_int i32_t 0)
-    | Icmp.Slt -> build_icmp Icmp.Slt strcmp_result (const_int i32_t 0)
-    | Icmp.Sle -> build_icmp Icmp.Sle strcmp_result (const_int i32_t 0)
-    | _ -> build_icmp Icmp.Eq strcmp_result (const_int i32_t 0)
-  ) "str_cmp" Utils.builder in
-  let boxed_str_result = box_bool_ll str_result Utils.builder in
+  let boxed_str_result = compare_string l_box r_box int_op in
   ignore (build_br merge_bb Utils.builder);
 
   (* List comparison *)
   position_at_end list_bb Utils.builder;
-  (* let list_result = compare_lists l_box r_box int_op Utils.builder in *)
-  let list_result = box_bool true in
+  let loop_entry = create_block "list_loop_start" in
+  let loop_body = create_block "list_loop_body" in
+  let loop_continue = create_block "list_loop_continue" in
+  let loop_exit = create_block "list_loop_exit" in
+  let false_bb = create_block "list_cmp_false" in
+  let true_bb = create_block "list_cmp_true" in
+  let elem_equal = create_block "elem_equal" in
+  let elem_not_equal = create_block "elem_not_equal" in
+  let elem_gt = create_block "elem_gt" in
+  let elem_lt = create_block "elem_lt" in
+  let list_end_bb = create_block "list_cmp_end" in
+  let length_cmp = create_block "length_cmp" in
+  let get_list_ptr box name =
+    let data_ptr = build_struct_gep box 1 (name ^ "_list_ptr") Utils.builder in
+    let list_ptr_cast = build_bitcast data_ptr (pointer_type (pointer_type list_t)) (name ^ "_list_ptr_cast") Utils.builder in
+    build_load list_ptr_cast name Utils.builder
+  in
+  let get_list_len list_ptr =
+    let len_ptr = build_struct_gep list_ptr 0 "len_ptr" Utils.builder in
+    build_load len_ptr "len" Utils.builder
+  in
+
+  let l_list_ptr = get_list_ptr l_box "l" in
+  let r_list_ptr = get_list_ptr r_box "r" in
+
+  let l_len = get_list_len l_list_ptr in
+  let r_len = get_list_len r_list_ptr in
+
+  let min_len = build_select 
+    (build_icmp Icmp.Slt l_len r_len "len_compare" Utils.builder)
+    l_len 
+    r_len
+    "min_len" Utils.builder in
+
+  let list_result_ptr = build_alloca (box_ptr_t) "list_result_ptr" Utils.builder in
+  ignore (build_store (box_bool_ll (const_int i1_t 1) Utils.builder) list_result_ptr Utils.builder);
+
+  let is_eq = build_alloca (i1_t) "is_eq" Utils.builder in
+  ignore (build_store (const_int i1_t 1) is_eq Utils.builder);
+  let is_lt = build_alloca (i1_t) "is_lt" Utils.builder in
+  ignore (build_store (const_int i1_t 1) is_lt Utils.builder);
+  let is_gt = build_alloca (i1_t) "is_lt" Utils.builder in
+  ignore (build_store (const_int i1_t 1) is_gt Utils.builder);
+
+  let counter = build_alloca i64_t "counter" Utils.builder in
+  ignore (build_store (const_int i64_t 0) counter Utils.builder);
+
+  ignore (build_br loop_entry Utils.builder);
+
+  position_at_end loop_entry Utils.builder;
+  let current_count = build_load counter "current_count" Utils.builder in
+  let continue_loop = build_icmp Icmp.Slt current_count min_len "continue_loop" Utils.builder in
+  ignore (build_cond_br continue_loop loop_body loop_exit Utils.builder);
+
+  position_at_end loop_body Utils.builder;
+  let l_arr = build_load (build_struct_gep l_list_ptr 1 "l_arr_ptr_ptr" builder) "l_arr" builder in
+  let r_arr = build_load (build_struct_gep r_list_ptr 1 "r_arr_ptr_ptr" builder) "r_arr" builder in
+  let l_elem = build_load (build_gep l_arr [| current_count |] "l_elem_ptr" builder) "l_elem" builder in
+  let r_elem = build_load (build_gep r_arr [| current_count |] "r_elem_ptr" builder) "r_elem" builder in
+  let is_equal = compare_int l_elem r_elem Icmp.Eq in
+  ignore(build_cond_br (get_bool_value is_equal Utils.builder) elem_equal elem_not_equal Utils.builder);
+
+  position_at_end elem_equal Utils.builder;
+  ignore(build_store (const_int i1_t 0) is_lt Utils.builder);
+  ignore(build_store (const_int i1_t 0) is_gt Utils.builder);
+  ignore(build_br loop_continue Utils.builder);
+
+  position_at_end elem_not_equal Utils.builder;
+  ignore(build_store (const_int i1_t 0) is_eq Utils.builder);
+  let lt = compare_int l_elem r_elem Icmp.Slt in
+  ignore(build_cond_br (get_bool_value lt Utils.builder) elem_lt elem_gt Utils.builder);
+
+  position_at_end elem_lt Utils.builder;
+  ignore(build_store (const_int i1_t 1) is_lt Utils.builder);
+  ignore(build_store (const_int i1_t 0) is_gt Utils.builder);
+  ignore(build_br list_end_bb Utils.builder);
+
+  position_at_end elem_gt Utils.builder;
+  ignore(build_store (const_int i1_t 0) is_lt Utils.builder);
+  ignore(build_store (const_int i1_t 1) is_gt Utils.builder);
+  ignore(build_br list_end_bb Utils.builder);
+
+  position_at_end loop_continue Utils.builder;
+  let next_count = build_add current_count (const_int i64_t 1) "next_count" Utils.builder in
+  ignore (build_store next_count counter Utils.builder);
+  ignore (build_br loop_entry Utils.builder);
+
+  position_at_end false_bb Utils.builder;
+  let false_result = box_bool_ll (const_int i1_t 0) Utils.builder in
   ignore (build_br merge_bb Utils.builder);
+
+  position_at_end true_bb Utils.builder;
+  let true_result = box_bool_ll (const_int i1_t 1) Utils.builder in
+  ignore (build_br merge_bb Utils.builder);
+
+  position_at_end loop_exit Utils.builder;
+  let len_ne = build_icmp Icmp.Ne l_len r_len "len_ne" Utils.builder in
+  let eq = build_load is_eq "eq" Utils.builder in
+  let cond = build_and len_ne eq "cond" Utils.builder in
+  ignore (build_cond_br cond length_cmp list_end_bb Utils.builder);
+
+  position_at_end length_cmp Utils.builder;
+  let is_len_gt = build_icmp Icmp.Sgt l_len r_len "is_len_gt" Utils.builder in
+  ignore(build_store is_len_gt is_gt Utils.builder);
+  ignore(build_store (build_not is_len_gt "is_len_not_gt" Utils.builder) is_lt Utils.builder);
+  ignore(build_br list_end_bb Utils.builder);
+
+  position_at_end list_end_bb Utils.builder;
+  let eq = build_load is_eq "eq" Utils.builder in
+  let gt = build_load is_gt "gt" Utils.builder in
+  let lt = build_load is_lt "lt" Utils.builder in
+
+  let eq_and_gt = build_and eq gt "eq_and_gt" Utils.builder in
+  let eq_and_lt = build_and eq lt "eq_and_lt" Utils.builder in
+  let not_eq = build_not eq "not_eq" Utils.builder in
+
+  let boxed_list_result = (
+    match int_op with
+    | Icmp.Eq -> box_bool_ll eq Utils.builder
+    | Icmp.Ne -> box_bool_ll not_eq Utils.builder
+    | Icmp.Sgt -> box_bool_ll gt Utils.builder
+    | Icmp.Sge -> box_bool_ll eq_and_gt Utils.builder
+    | Icmp.Slt -> box_bool_ll lt Utils.builder
+    | Icmp.Sle -> box_bool_ll eq_and_lt Utils.builder
+    | _ -> box_bool_ll eq Utils.builder
+  ) in
+  ignore(build_br merge_bb Utils.builder);
 
   (* None comparison *)
   position_at_end none_bb Utils.builder;
@@ -465,8 +598,10 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
     (boxed_int_result, int_bb); 
     (boxed_bool_result, bool_bb);
     (boxed_str_result, str_bb); 
-    (list_result, list_bb);
-    (boxed_none_result, none_bb)
+    (boxed_list_result, list_end_bb);
+    (boxed_none_result, none_bb);
+    (false_result, false_bb);
+    (true_result, true_bb)
     ]
      "result" Utils.builder
 
