@@ -462,6 +462,8 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   let elem_lt = create_block "elem_lt" in
   let list_end_bb = create_block "list_cmp_end" in
   let length_cmp = create_block "length_cmp" in
+  let nested_bb = create_block "nested_list_cmp" in
+  let not_nested_bb = create_block "not_nested_list_cmp" in
   let get_list_ptr box name =
     let data_ptr = build_struct_gep box 1 (name ^ "_list_ptr") Utils.builder in
     let list_ptr_cast = build_bitcast data_ptr (pointer_type (pointer_type list_t)) (name ^ "_list_ptr_cast") Utils.builder in
@@ -509,8 +511,19 @@ let compare_values (l_box: llvalue) (r_box: llvalue) (int_op: Icmp.t) : llvalue 
   let r_arr = build_load (build_struct_gep r_list_ptr 1 "r_arr_ptr_ptr" builder) "r_arr" builder in
   let l_elem = build_load (build_gep l_arr [| current_count |] "l_elem_ptr" builder) "l_elem" builder in
   let r_elem = build_load (build_gep r_arr [| current_count |] "r_elem_ptr" builder) "r_elem" builder in
+  let l_tag = Utils.get_tag l_elem in
+  let r_tag = Utils.get_tag r_elem in
   let is_equal = compare_int l_elem r_elem Icmp.Eq in
+  let is_tag_equal = build_icmp Icmp.Eq l_tag r_tag "is_tag_equal" Utils.builder in
+  let is_nested = build_icmp Icmp.Eq l_tag (const_int i8_t 3) "is_nested" Utils.builder in
+  ignore(build_cond_br is_nested nested_bb not_nested_bb Utils.builder);
+
+  position_at_end not_nested_bb Utils.builder;
   ignore(build_cond_br (get_bool_value is_equal Utils.builder) elem_equal elem_not_equal Utils.builder);
+
+  (* I'm sorry, no nested list comparison *)
+  position_at_end nested_bb Utils.builder;
+  ignore(build_cond_br is_tag_equal elem_equal elem_not_equal Utils.builder); 
 
   position_at_end elem_equal Utils.builder;
   ignore(build_store (const_int i1_t 0) is_lt Utils.builder);
