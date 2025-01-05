@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  compiler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: camelflage
+    working_dir: /app
+    command: >
+      bash -c 
+      " 
+      eval $(opam env) &&
+      make minipython.exe &&
+      cd tests-mini-python &&
+      chmod +x test &&
+      ./test -3 ../minipython.exe
+      "
